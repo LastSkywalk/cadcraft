@@ -67,6 +67,10 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
         if let EntityKind::Insert(i) = &mut e.kind {
             for a in &mut i.attribs {
                 if let Some(v) = value_for(&vals, &a.tag) {
+                    // A typed value is plain text: the field it came from is dropped.
+                    if v != a.text.value {
+                        a.field = None;
+                    }
                     a.text.value = v;
                     n += 1;
                 }
@@ -131,6 +135,7 @@ fn edit(s: &mut Session, (h, k): (Handle, usize), f: impl FnOnce(&str) -> Option
             && let Some(v) = f(&a.text.value).filter(|v| *v != a.text.value)
         {
             a.text.value = v;
+            a.field = None;
             changed = true;
         }
     })?;

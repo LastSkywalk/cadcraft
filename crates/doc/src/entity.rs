@@ -356,6 +356,10 @@ pub struct Attrib {
     /// Its other modes: Verify, Preset and Lock position.
     #[serde(default, skip_serializing_if = "AttribModes::is_default")]
     pub modes: AttribModes,
+    /// The field its value comes from (a block attribute only): the value is evaluated again
+    /// when what the field reads changes, such as a dynamic block parameter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<crate::field::Field>,
 }
 
 /// An attribute's modes beyond invisible and constant.

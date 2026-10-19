@@ -387,6 +387,7 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
                 text.value.clone_from(&m.read_as);
             }
             EntityKind::AttDef(Attrib {
+                field: None,
                 tag: own.s(2).unwrap_or_default(),
                 text,
                 invisible: own.i(70).unwrap_or(0) & 1 != 0,
@@ -997,6 +998,8 @@ struct Rx {
     block_arrays: HashMap<String, cadcraft_doc::ArrayParams>,
     /// LAYER record handle (upper case) → layer name (VIEWPORT group 341 frozen layers).
     layers: HashMap<String, String>,
+    /// The OBJECTS section's fields, for block attributes.
+    fields: crate::dxf_field::FieldIndex,
 }
 
 /// The plot style names of a file: the entries of the `ACAD_PLOTSTYLENAME` dictionary of the
@@ -1198,6 +1201,7 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
                                 text.value.clone_from(&m.read_as);
                             }
                             attribs.push(Attrib {
+                                field: rx.fields.attrib_field(t2, handle),
                                 tag: own.s(2).unwrap_or_default(),
                                 text,
                                 invisible: own.i(70).unwrap_or(0) & 1 != 0,
@@ -1672,7 +1676,7 @@ pub fn read(bytes: &[u8]) -> Result<Drawing> {
     d.layouts.clear();
     // A file without $INSUNITS declares no units (#1209); only new drawings take the template's.
     d.header.set_i64("INSUNITS", 0);
-    let mut rx = Rx { pstyles: plot_style_names(&secs), ..Rx::default() };
+    let mut rx = Rx { pstyles: plot_style_names(&secs), fields: crate::dxf_field::index(&secs), ..Rx::default() };
     let mut blocks: Vec<(String, Vec3, String, Vec<(Option<String>, bool, Entity)>, i64)> = Vec::new();
     let mut layout_objs: Vec<(String, u32, String, PageSetup)> = Vec::new();
     let mut entities = Vec::new();
@@ -1978,7 +1982,7 @@ struct Objects {
     sortents: Vec<(String, HashMap<Handle, u64>)>,
 }
 
-const MAX_OBJECTS: usize = 1_000_000;
+pub(crate) const MAX_OBJECTS: usize = 1_000_000;
 /// Deepest chain of dictionaries followed from an object to its annotation scale contexts.
 const MAX_ANNO_DEPTH: usize = 8;
 

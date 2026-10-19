@@ -444,6 +444,7 @@ fn attribs(d: &Drawing, ins: &Insert, values: &[(String, String)]) -> Vec<Attrib
         let EntityKind::Text(mut text) = k else { continue };
         text.value = value.clone();
         out.push(Attrib {
+            field: None,
             tag: ad.tag.clone(),
             text,
             invisible: ad.invisible,

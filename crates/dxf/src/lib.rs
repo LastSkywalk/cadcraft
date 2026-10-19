@@ -393,6 +393,16 @@ pub fn format_real(v: f64) -> String {
     if !v.is_finite() {
         return "0.0".into();
     }
+    // Very large and very small values in exponent form, as AutoCAD writes them (`1.0E+20`):
+    // plain digits would run to hundreds of characters.
+    let a = v.abs();
+    if a != 0.0 && !(1e-10..1e16).contains(&a) {
+        let e = format!("{v:E}");
+        let (m, x) = e.split_once('E').unwrap_or((&e, "0"));
+        let x: i32 = x.parse().unwrap_or(0);
+        let m = if m.contains('.') { m.to_string() } else { format!("{m}.0") };
+        return format!("{m}E{}{:02}", if x < 0 { '-' } else { '+' }, x.abs());
+    }
     let s = format!("{v}");
     if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") { s } else { format!("{s}.0") }
 }
@@ -569,6 +579,19 @@ pub fn records(tags: &[Tag]) -> Vec<(String, Vec<Tag>)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn huge_and_tiny_reals_in_exponent_form() {
+        // Plain digits would run to hundreds of characters; the value reads back exactly.
+        assert_eq!(format_real(1e20), "1.0E+20");
+        assert_eq!(format_real(-2.5e-12), "-2.5E-12");
+        assert_eq!(format_real(0.5), "0.5");
+        assert_eq!(format_real(12.0), "12.0");
+        for v in [f64::MAX, -f64::MAX, 1e308, f64::MIN_POSITIVE, 5e-324, 1.2345678901234567e16] {
+            let s = format_real(v);
+            assert!(s.len() < 32, "{s}");
+            assert_eq!(s.parse::<f64>().ok(), Some(v), "{s}");
+        }
+    }
     #[test]
     fn ascii_roundtrip() {
         let tags = vec![

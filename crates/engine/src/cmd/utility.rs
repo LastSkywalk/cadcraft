@@ -237,7 +237,15 @@ fn run_find(s: &mut Session, p: &Value) -> Result<Value> {
         match &mut k {
             EntityKind::Text(t) => apply(&mut t.value),
             EntityKind::MText(t) => apply(&mut t.contents),
-            EntityKind::Insert(i) => i.attribs.iter_mut().for_each(|a| apply(&mut a.text.value)),
+            EntityKind::Insert(i) => i.attribs.iter_mut().for_each(|a| {
+                let was = a.text.value.clone();
+                apply(&mut a.text.value);
+                // A value replaced in place is plain text from now on (its field would put the
+                // old one back).
+                if a.text.value != was {
+                    a.field = None;
+                }
+            }),
             EntityKind::Dimension(dm) => apply(&mut dm.text),
             EntityKind::MLeader(m) => {
                 if let Some(t) = &mut m.text {

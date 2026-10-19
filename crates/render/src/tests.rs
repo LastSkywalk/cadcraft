@@ -762,6 +762,7 @@ fn transparent_solid_hatch_blends_with_the_line_under_it() {
 
 fn attrib(tag: &str) -> cadcraft_doc::Attrib {
     cadcraft_doc::Attrib {
+        field: None,
         tag: tag.into(),
         text: cadcraft_doc::Text {
             insert: Vec3::new(1.0, 1.0, 0.0),
