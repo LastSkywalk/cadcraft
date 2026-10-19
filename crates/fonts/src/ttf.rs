@@ -223,6 +223,7 @@ fn lock() -> MutexGuard<'static, Db> {
 }
 
 /// The most directories [`user_font_dirs`] takes from `CADCRAFT_FONTPATH`.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_DIRS: usize = 16;
 
 #[cfg(not(target_arch = "wasm32"))]

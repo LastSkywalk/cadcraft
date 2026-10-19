@@ -598,6 +598,8 @@ fn apply(
     let was = current(&m, values, direct);
     record_values(d, insert, def_record, &m, &new, (direct, was.as_ref()));
     drop_if_unused(d, &old);
+    // Attribute fields that read the reference's parameters show the new values.
+    crate::field::update_insert(d, insert);
     Ok(())
 }
 

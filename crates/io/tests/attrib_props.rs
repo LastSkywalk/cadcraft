@@ -25,6 +25,7 @@ fn text(x: f64, value: &str) -> Text {
 
 fn attrib(tag: &str, x: f64, props: AttribProps) -> Attrib {
     Attrib {
+        field: None,
         tag: tag.into(),
         text: text(x, tag),
         invisible: false,

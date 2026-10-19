@@ -22,6 +22,10 @@ struct W {
     /// Persistent reactors of boundary objects: each source object of an associative hatch →
     /// the hatches (groups `{ACAD_REACTORS 330 …}`), from [`hatch_reactors`].
     reactors: HashMap<Handle, Vec<String>>,
+    /// The objects of attribute fields (their dictionaries and FIELDs), written in OBJECTS.
+    fields: Vec<Tag>,
+    /// The handles of those FIELDs, for the field list.
+    field_handles: Vec<String>,
 }
 
 impl W {
@@ -204,7 +208,15 @@ fn annotative_xdata(w: &mut W) {
 
 /// Override (`ACAD` DSTYLE) and associativity (`CADCRAFT` ASSOC) xdata of a dimension.
 fn dim_xdata(w: &mut W, dm: &Dimension, cx: &Ctx) {
-    let mut ov = W { t: Vec::new(), next: 0, pstyles: HashMap::new(), layers: HashMap::new(), reactors: HashMap::new() };
+    let mut ov = W {
+        t: Vec::new(),
+        next: 0,
+        pstyles: HashMap::new(),
+        layers: HashMap::new(),
+        reactors: HashMap::new(),
+        fields: Vec::new(),
+        field_handles: Vec::new(),
+    };
     let mut sah = false;
     for (k, v) in &dm.overrides {
         let Some(field) = DimStyle::field_name(k) else { continue };
@@ -498,6 +510,53 @@ fn multiline_tags(w: &mut W, a: &Attrib, attdef: bool) {
     }
     w.i(73, if m.line_spacing_exact { 2 } else { 1 });
     w.f(44, m.line_spacing);
+}
+
+/// An attribute's field: its extension dictionary (`102 {ACAD_XDICTIONARY`, written here on the
+/// ATTRIB `attrib`) holds `ACAD_FIELD`, whose `TEXT` entry is the field; those objects go in
+/// OBJECTS ([`W::fields`]). `host` is the block reference the field reads as its own object.
+fn attrib_field(w: &mut W, f: &cadcraft_doc::field::Field, attrib: &str, host: &str) {
+    let (xdict, fields) = (w.h(), w.h());
+    w.group("ACAD_XDICTIONARY", 360, &[xdict.as_str()]);
+    let mut n = w.next;
+    let mut recs = Vec::new();
+    let root = crate::dxf_field::field_records(
+        f,
+        &fields,
+        host,
+        &mut || {
+            let h = format!("{n:X}");
+            n = n.saturating_add(1);
+            h
+        },
+        &mut recs,
+    );
+    w.next = n;
+    w.fields.extend([
+        Tag::s(0, "DICTIONARY"),
+        Tag::s(5, xdict.clone()),
+        Tag::s(330, attrib),
+        Tag::s(100, "AcDbDictionary"),
+        Tag::i(280, 1),
+        Tag::i(281, 1),
+        Tag::s(3, "ACAD_FIELD"),
+        Tag::s(360, fields.clone()),
+        Tag::s(0, "DICTIONARY"),
+        Tag::s(5, fields.clone()),
+        Tag::s(102, "{ACAD_REACTORS"),
+        Tag::s(330, xdict.clone()),
+        Tag::s(102, "}"),
+        Tag::s(330, xdict),
+        Tag::s(100, "AcDbDictionary"),
+        Tag::i(280, 1),
+        Tag::i(281, 1),
+        Tag::s(3, "TEXT"),
+        Tag::s(360, root),
+    ]);
+    for (h, t) in recs {
+        w.field_handles.push(h);
+        w.fields.extend(t);
+    }
 }
 
 /// ATTRIB/ATTDEF flags (group 70): 1 invisible, 2 constant, 4 verify, 8 preset.
@@ -869,7 +928,10 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                 for a in &i.attribs {
                     let ah = w.h();
                     w.s(0, "ATTRIB");
-                    w.s(5, ah);
+                    w.s(5, ah.clone());
+                    if let Some(f) = a.field.as_ref().filter(|_| cx.target >= Version::R2004) {
+                        attrib_field(w, f, &ah, &e.handle.hex());
+                    }
                     w.s(330, e.handle.hex());
                     w.s(100, "AcDbEntity");
                     let (c, base) = attrib_common(d, e, i, a);
@@ -1709,9 +1771,12 @@ pub fn write(d: &Drawing) -> String {
     cadcraft_dxf::write_ascii(&tags(d, Version::R2000))
 }
 
-/// The drawing's DXF tags, declaring `version` in `$ACADVER`.
+/// The drawing's DXF tags, declaring `version` in `$ACADVER`, with dynamic block objects in the
+/// form AutoCAD reads ([`crate::dxf_acad_form`]).
 pub fn tags(d: &Drawing, version: Version) -> Vec<Tag> {
-    tags_for(d, version, version)
+    let mut t = tags_for(d, version, version);
+    crate::dxf_acad_form::normalize(&mut t);
+    t
 }
 
 /// The R2000 DXF the DWG bridge converts to a `dwg` version DWG: its entity types are the DWG
@@ -1747,6 +1812,8 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
         pstyles: HashMap::new(),
         layers: HashMap::new(),
         reactors: hatch_reactors(d),
+        fields: Vec::new(),
+        field_handles: Vec::new(),
     };
     // Pre-allocate handles for block records.
     let mut paper_layouts: Vec<&Layout> = d.layouts.iter().collect();
@@ -1990,6 +2057,10 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
         classes.push(("IMAGEDEF_REACTOR", "AcDbRasterImageDefReactor", 1, false));
         classes.push(("RASTERVARIABLES", "AcDbRasterVariables", 0, false));
     }
+    if target >= Version::R2004 && every.iter().any(|e| matches!(&e.kind, EntityKind::Insert(i) if i.attribs.iter().any(|a| a.field.is_some()))) {
+        classes.push(("FIELD", "AcDbField", 1152, false));
+        classes.push(("FIELDLIST", "AcDbFieldList", 1152, false));
+    }
     classes.push(("SCALE", "AcDbScale", 0, false));
     for (dxf_name, cpp, proxy, is_entity) in classes {
         w.s(0, "CLASS");
@@ -2214,7 +2285,15 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
         w.i(70, 0);
         let v = serde_json::to_value(s).unwrap_or_default();
         let defaults = serde_json::to_value(DimStyle::default()).unwrap_or_default();
-        let mut newer = W { t: Vec::new(), next: 0, pstyles: HashMap::new(), layers: HashMap::new(), reactors: HashMap::new() };
+        let mut newer = W {
+            t: Vec::new(),
+            next: 0,
+            pstyles: HashMap::new(),
+            layers: HashMap::new(),
+            reactors: HashMap::new(),
+            fields: Vec::new(),
+            field_handles: Vec::new(),
+        };
         for (field, code, kind) in dxf_ext::DIM_CODES {
             let Some(enc) = v.get(*field).and_then(|x| cx.encode(*kind, x)) else { continue };
             // DIMPOST is written even when empty: a reader that defaults a missing one to "<>"
@@ -2403,6 +2482,14 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     }
     w.s(3, "ACAD_SCALELIST");
     w.s(350, scale_dict.clone());
+    // The field list, unless the drawing keeps the one it was read with (`dxf_raw` brings it up
+    // to date).
+    let kept_field_list = d.foreign.dictionary.iter().any(|(k, _)| k.eq_ignore_ascii_case("ACAD_FIELDLIST"));
+    let field_list = (!w.field_handles.is_empty() && !kept_field_list).then(|| w.h());
+    if let Some(h) = &field_list {
+        w.s(3, "ACAD_FIELDLIST");
+        w.s(350, h.clone());
+    }
     w.s(0, "DICTIONARY");
     w.s(5, group_dict);
     w.s(330, root_dict.clone());
@@ -2621,6 +2708,23 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     }
     // Raster image definitions.
     w.t.extend(crate::dxf_image::objects(&cx.images, &root_dict));
+    // Attribute fields and the field list.
+    let fields = std::mem::take(&mut w.fields);
+    w.t.extend(fields);
+    if let Some(h) = field_list {
+        w.s(0, "FIELDLIST");
+        w.s(5, h);
+        w.s(102, "{ACAD_REACTORS");
+        w.s(330, root_dict.clone());
+        w.s(102, "}");
+        w.s(330, root_dict.clone());
+        w.s(100, "AcDbIdSet");
+        w.i(90, w.field_handles.len() as i64);
+        for f in w.field_handles.clone() {
+            w.s(330, f);
+        }
+        w.s(100, "AcDbFieldList");
+    }
     w.s(0, "ENDSEC");
     w.s(0, "EOF");
     let seed = format!("{:X}", w.next);
@@ -2841,6 +2945,8 @@ pub fn entity_groups(d: &Drawing, e: &Entity) -> (String, Vec<Tag>) {
         pstyles: HashMap::new(),
         layers: HashMap::new(),
         reactors: HashMap::new(),
+        fields: Vec::new(),
+        field_handles: Vec::new(),
     };
     let cx = Ctx { target: Version::R2018, ..Ctx::default() };
     let paper = d.space_of(e.handle).is_some_and(|s| !matches!(s, cadcraft_doc::Space::Model));

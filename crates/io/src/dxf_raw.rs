@@ -72,7 +72,7 @@ fn raw(t: &Tag) -> RawTag {
 
 /// A kept group with the value type its code has (so binary output encodes it right); text that
 /// doesn't parse as that type stays text.
-fn tag(r: &RawTag) -> Tag {
+pub(crate) fn tag(r: &RawTag) -> Tag {
     use cadcraft_dxf::{Kind, Value, kind_of};
     let v = r.value.trim();
     let value = match kind_of(r.code) {
@@ -722,6 +722,30 @@ impl Map<'_> {
     }
 }
 
+/// The kept field list, listing the fields written now: the kept ones and those CADCraft wrote
+/// for block attributes (a field whose object is gone is not listed).
+fn field_list(map: &Map, o: &ForeignObject, recs: &[Rec], tags: &[Tag], out: &mut Vec<Tag>) {
+    let set = o.tags.iter().position(|t| t.code == 100 && t.value == "AcDbIdSet");
+    let Some(set) = set else {
+        map.object(o, out);
+        return;
+    };
+    // The object without its list: its head, then what follows the list.
+    let tail = o.tags.iter().skip(set + 1).skip_while(|t| matches!(t.code, 90 | 330)).cloned();
+    let lean = ForeignObject { handle: o.handle, kind: o.kind.clone(), tags: o.tags.iter().take(set + 1).cloned().chain(tail).collect() };
+    let mut obj = Vec::new();
+    map.object(&lean, &mut obj);
+    let kept = map.f.objects.iter().filter(|x| x.kind.eq_ignore_ascii_case("FIELD")).filter_map(|x| map.alive.get(&x.handle.hex()).cloned());
+    let ours =
+        recs.iter().filter(|r| r.sec == "OBJECTS" && r.kind == "FIELD").filter_map(|r| head(tags.get(r.start + 1..r.end).unwrap_or(&[])).handle);
+    let list: Vec<String> = kept.chain(ours).collect();
+    let at = obj.iter().position(|t| t.code == 100 && t.str() == "AcDbIdSet").map_or(obj.len(), |i| i + 1);
+    let mut items = vec![Tag::i(90, list.len() as i64)];
+    items.extend(list.into_iter().map(|h| Tag::s(330, h)));
+    obj.splice(at..at, items);
+    out.extend(obj);
+}
+
 /// The extras of a written record, if the drawing keeps any for it.
 fn extra_for<'a>(f: &'a Foreign, xd: &XdataOf, rec: &Rec, body: &[Tag], block: &str) -> Option<Cow<'a, ForeignExtra>> {
     match (rec.sec.as_str(), rec.kind.as_str()) {
@@ -867,7 +891,11 @@ pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing) {
         }
         if r.kind == "ENDSEC" && r.sec == "OBJECTS" {
             for o in f.objects.iter().filter(|o| map.alive.contains_key(&o.handle.hex())) {
-                map.object(o, &mut out);
+                if o.kind.eq_ignore_ascii_case("FIELDLIST") {
+                    field_list(&map, o, &recs, tags, &mut out);
+                } else {
+                    map.object(o, &mut out);
+                }
             }
         }
         for (sec, t) in planned.get(&r.start).into_iter().flatten() {

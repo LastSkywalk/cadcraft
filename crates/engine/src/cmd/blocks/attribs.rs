@@ -98,6 +98,7 @@ fn synced(blk: &Block, defs: &[&Attrib], ins: &Insert) -> Vec<Attrib> {
                 .map(|a| a.text.value.clone())
                 .unwrap_or_else(|| ad.text.value.clone());
             Attrib {
+                field: None,
                 tag: ad.tag.clone(),
                 text: t,
                 invisible: ad.invisible,

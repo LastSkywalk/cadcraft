@@ -267,6 +267,7 @@ fn block_definition_properties_and_constant_attdefs_roundtrip() {
         valign: VAlign::Baseline,
     };
     let attdef = |tag: &str, invisible: bool, constant: bool| Attrib {
+        field: None,
         tag: tag.into(),
         text: text.clone(),
         invisible,
@@ -1414,6 +1415,7 @@ fn intl_sample() -> Drawing {
     )
     .unwrap();
     let def = Attrib {
+        field: None,
         tag: "图号".into(),
         text: intl_text("默认"),
         invisible: false,
@@ -1427,6 +1429,7 @@ fn intl_sample() -> Drawing {
     b.entities.push(Entity::new(Handle(0x50), EntityKind::AttDef(def)));
     d.blocks.insert(block.clone(), std::sync::Arc::new(b));
     let att = Attrib {
+        field: None,
         tag: "图号".into(),
         text: intl_text(INTL),
         invisible: false,
@@ -1689,6 +1692,7 @@ fn attdef_prompt_survives_dxf_roundtrip() {
     };
     let attdef = |prompt: &str| {
         EntityKind::AttDef(Attrib {
+            field: None,
             tag: "TAG1".into(),
             text: text.clone(),
             invisible: false,

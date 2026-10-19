@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 use cadcraft_geom::Vec3;
 use serde::Serialize;
 
-use super::{ActionKind, DynamicBlock, ParameterKind, dynamic_block};
+use super::{ActionKind, Cursor, DynamicBlock, ParameterKind, dynamic_block, section, sections};
 use crate::foreign::ForeignObject;
 use crate::{Drawing, EntityKind, Handle};
 
@@ -131,6 +131,71 @@ pub fn reference(d: &Drawing, insert: Handle) -> Option<Reference> {
         }
     }
     Some(Reference { definition, values })
+}
+
+/// A parameter's value as a field reads it (`AcObjProp … Parameter(N).Property`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ParamValue {
+    Number(f64),
+    Text(String),
+}
+
+/// The XRECORD reference `insert` keeps parameter `node`'s value in, if it keeps one.
+fn value_record(d: &Drawing, insert: Handle, node: i32) -> Option<&ForeignObject> {
+    let objects = objects(d);
+    let rep = d.foreign.entities.get(&insert).and_then(|x| x.xdict).and_then(|x| entry(&objects, x, "AcDbBlockRepresentation"))?;
+    let cache = entry(&objects, rep, "AppDataCache").and_then(|c| entry(&objects, c, "ACAD_ENHANCEDBLOCKDATA"))?;
+    let h = entries(&objects, cache).into_iter().take(MAX_VALUES).find(|(k, _)| k.trim().parse::<i32>().ok() == Some(node))?.1;
+    objects.get(&h).copied()
+}
+
+/// Property `property` of parameter `node` of dynamic block reference `insert`, as a field reads
+/// it: a distance (`UpdatedDistance`, `Distance`) in drawing units — the length between the
+/// parameter's points, across for a horizontal constraint and up for a vertical one — a user
+/// parameter's value (`UserVariable`), a visibility state or a lookup value.
+pub fn parameter_value(d: &Drawing, insert: Handle, node: i32, property: &str) -> Option<ParamValue> {
+    let r = reference(d, insert)?;
+    let EntityKind::Insert(ins) = &d.entity(insert)?.kind else { return None };
+    let m = dynamic_block(d, &r.definition)?;
+    let p = m.parameters.iter().find(|p| p.node == node)?;
+    let (sx, sy) = (ins.scale.x.abs(), ins.scale.y.abs());
+    match property.to_ascii_lowercase().as_str() {
+        "updateddistance" | "distance" => {
+            let (b, e) = match (r.values.get(&node), &p.kind) {
+                (Some(Value::Points { base, end }), _) => (*base, *end),
+                (_, ParameterKind::Linear { base, end, .. }) => (*base, *end),
+                _ => {
+                    // A constraint parameter has its points where a linear one has them.
+                    let o = d.foreign.objects.iter().find(|o| o.handle == p.handle)?;
+                    let secs = sections(&o.tags);
+                    let mut c = Cursor::new(section(&secs, "AcDbBlock2PtParameter"));
+                    (c.point(1010), c.point(1011))
+                }
+            };
+            let kind = match &p.kind {
+                ParameterKind::Other { dxf_type } => dxf_type.as_str(),
+                _ => "",
+            };
+            let v = if kind.contains("HORIZONTAL") {
+                (e.x - b.x).abs() * sx
+            } else if kind.contains("VERTICAL") {
+                (e.y - b.y).abs() * sy
+            } else {
+                (e - b).len() * sx
+            };
+            v.is_finite().then_some(ParamValue::Number(v))
+        }
+        "uservariable" | "value" => {
+            let o = value_record(d, insert, node)?;
+            if let Some(t) = o.tags.iter().find(|t| t.code == 1) {
+                return Some(ParamValue::Text(t.value.clone()));
+            }
+            o.tags.iter().find(|t| t.code == 40).and_then(|t| t.value.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).map(ParamValue::Number)
+        }
+        "visibilitystate" => Current { m: &m, values: &r.values }.property(node, "VisibilityState").map(ParamValue::Text),
+        "lookupstring" => Some(ParamValue::Text(Current { m: &m, values: &r.values }.lookup(node).0)),
+        _ => None,
+    }
 }
 
 /// A number as the drawing shows lengths (LUPREC decimals).

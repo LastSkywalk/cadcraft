@@ -5,7 +5,9 @@
 /// What a DXF file holds that CADCraft doesn't model, kept and written back (#528).
 mod dxf_raw;
 
+mod dxf_acad_form;
 mod dxf_ext;
+mod dxf_field;
 mod dxf_image;
 mod dxf_mleader;
 mod dxf_read;

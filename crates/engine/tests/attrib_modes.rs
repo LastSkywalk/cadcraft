@@ -25,6 +25,7 @@ fn references_take_lock_position_from_the_definition() {
     };
     let modes = AttribModes { verify: true, preset: true, lock_position: true };
     let def = Attrib {
+        field: None,
         tag: "MARK".into(),
         text,
         invisible: false,
