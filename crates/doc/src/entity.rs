@@ -717,6 +717,12 @@ pub struct MLeader {
     /// Block content in place of the text: a block reference placed at the landing.
     #[serde(default)]
     pub block: Option<Insert>,
+    /// The text hangs from the landing point, which lies on the bottom line of its first line of
+    /// text (multileader text attachment "bottom of top line", DXF 174/175 = 6). The landing line
+    /// is then drawn as the shelf under the whole text, as AutoCAD draws a section mark; with any
+    /// other attachment the landing line is only the dogleg.
+    #[serde(default)]
+    pub shelf: bool,
 }
 
 impl MLeader {

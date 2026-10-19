@@ -103,7 +103,7 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
         "DYNPIFORMAT" => json!(i32::from(st.dynpi_cartesian)),
         "DYNPICOORDS" => json!(i32::from(st.dynpi_absolute)),
         "DYNPROMPT" => json!(i32::from(st.dynprompt)),
-        "LWDISPLAY" => json!(i32::from(st.lwdisplay)),
+        "LWDISPLAY" => json!(i32::from(s.drafting_settings().lwdisplay)),
         "PLOTTRANSPARENCYOVERRIDE" => json!(st.plot_transparency_override),
         // Negative while turned off, so the toggle keeps the display it turns back on.
         "SELECTIONCYCLING" => {
@@ -271,7 +271,11 @@ pub fn set(s: &mut Session, name: &str, v: &Value) -> Result<()> {
         "DYNPIFORMAT" => st.dynpi_cartesian = as_bool(v).ok_or_else(bad)?,
         "DYNPICOORDS" => st.dynpi_absolute = as_bool(v).ok_or_else(bad)?,
         "DYNPROMPT" => st.dynprompt = as_bool(v).ok_or_else(bad)?,
-        "LWDISPLAY" => st.lwdisplay = as_bool(v).ok_or_else(bad)?,
+        // Saved in the drawing, as in AutoCAD: the canvas reads it back from the header.
+        "LWDISPLAY" => {
+            let on = as_bool(v).ok_or_else(bad)?;
+            s.doc_mut()?.header.set_i64("LWDISPLAY", i64::from(on));
+        }
         "PLOTTRANSPARENCYOVERRIDE" => {
             st.plot_transparency_override = as_i(v).filter(|i| (0..=2).contains(i)).and_then(|i| u8::try_from(i).ok()).ok_or_else(bad)?
         }

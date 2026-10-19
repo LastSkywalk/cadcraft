@@ -97,8 +97,13 @@ pub fn unit_mm_of(d: &Drawing, h: cadcraft_doc::Handle) -> f64 {
 /// The paper sheet of a layout, in paper-space units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sheet {
-    /// Sheet size (already rotated for landscape). The sheet spans `(0,0)..size`.
+    /// Sheet size (already rotated for landscape). The sheet spans `origin..origin + size`.
     pub size: Vec2,
+    /// Where the sheet's lower-left corner lies in paper space. Paper space (0,0) is the printable
+    /// area's lower-left corner, as it is in AutoCAD (a viewport fitted to the sheet runs from
+    /// (0,0) to the printable size, and the paper rectangle reaches into negative coordinates):
+    /// the margins and the page setup's plot origin put the sheet that much down and left of it.
+    pub origin: Vec2,
     /// Printable area (inside the margins).
     pub printable: Bounds2,
     /// Millimetres per paper-space unit.
@@ -107,7 +112,12 @@ pub struct Sheet {
 
 impl Sheet {
     pub fn bounds(&self) -> Bounds2 {
-        Bounds2::new(Vec2::ZERO, self.size)
+        Bounds2::new(self.origin, self.origin + self.size)
+    }
+    /// The printable area in the sheet's own frame: the paper's lower-left corner is (0,0), which
+    /// is what a plot measures its margins from and what a PDF's user space has its origin at.
+    pub fn printable_on_paper(&self) -> Bounds2 {
+        Bounds2::new(self.printable.min - self.origin, self.printable.max - self.origin)
     }
     /// The sheet for a page setup in a drawing whose paper units are `unit_mm` millimetres.
     pub fn from_page(page: &PageSetup, unit_mm: f64) -> Sheet {
@@ -119,13 +129,15 @@ impl Sheet {
         let size = Vec2::new(w / u, h / u);
         let m = |i: usize| page.margins_mm.get(i).copied().filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(0.0) / u;
         // Margins: left, bottom, right, top (DXF group codes 40..43).
-        let (l, b, r, t) = (m(0), m(1), m(2), m(3));
-        let printable = if l + r < size.x && b + t < size.y {
-            Bounds2::new(Vec2::new(l, b), Vec2::new(size.x - r, size.y - t))
-        } else {
-            Bounds2::new(Vec2::ZERO, size)
-        };
-        Sheet { size, printable, unit_mm: u }
+        let (mut l, mut b, mut r, mut t) = (m(0), m(1), m(2), m(3));
+        if l + r >= size.x || b + t >= size.y {
+            // Nonsensical margins leave no printable area: the whole sheet is printable.
+            (l, b, r, t) = (0.0, 0.0, 0.0, 0.0);
+        }
+        // Plot origin (PLOTSETTINGS 46/47, in millimetres) from the printable area's corner.
+        let o = |i: usize| page.plot_origin_mm.get(i).copied().filter(|v| v.is_finite() && v.abs() <= MAX_PLOT_OFFSET_MM).unwrap_or(0.0) / u;
+        let origin = Vec2::new(-(l + o(0)), -(b + o(1)));
+        Sheet { size, origin, printable: Bounds2::new(origin + Vec2::new(l, b), origin + Vec2::new(size.x - r, size.y - t)), unit_mm: u }
     }
 }
 
@@ -149,8 +161,20 @@ mod tests {
         let page = PageSetup { width_mm: 210.0, height_mm: 297.0, margins_mm: [5.0; 4], landscape: true, ..PageSetup::default() };
         let s = Sheet::from_page(&page, 1.0);
         assert_eq!(s.size, Vec2::new(297.0, 210.0));
-        assert_eq!(s.printable, Bounds2::new(Vec2::new(5.0, 5.0), Vec2::new(292.0, 205.0)));
-        let hostile = PageSetup { width_mm: f64::NAN, height_mm: -1.0, margins_mm: [1e9; 4], ..PageSetup::default() };
+        // Paper space (0,0) is the printable area's corner: the paper reaches 5 mm left and below.
+        assert_eq!(s.origin, Vec2::new(-5.0, -5.0));
+        assert_eq!(s.bounds(), Bounds2::new(Vec2::new(-5.0, -5.0), Vec2::new(292.0, 205.0)));
+        assert_eq!(s.printable, Bounds2::new(Vec2::ZERO, Vec2::new(287.0, 200.0)));
+        // A plot origin moves the sheet the other way.
+        let moved = PageSetup { plot_origin_mm: [10.0, 20.0], ..page.clone() };
+        let s = Sheet::from_page(&moved, 1.0);
+        assert_eq!(s.origin, Vec2::new(-15.0, -25.0));
+        assert_eq!(s.printable.min, Vec2::new(-10.0, -20.0));
+        // Paper units: an imperial drawing measures the margins and the origin in inches.
+        let s = Sheet::from_page(&moved, 25.4);
+        assert!((s.origin.x - -(5.0 + 10.0) / 25.4).abs() < 1e-12);
+        let hostile =
+            PageSetup { width_mm: f64::NAN, height_mm: -1.0, margins_mm: [1e9; 4], plot_origin_mm: [f64::NAN, 1e300], ..PageSetup::default() };
         let s = Sheet::from_page(&hostile, 0.0);
         assert!(s.size.x > 0.0 && s.printable == s.bounds());
     }

@@ -79,11 +79,14 @@ pub fn plain_mtext(s: &str) -> String {
     out
 }
 
-/// A colour set inline with `\C` (ACI) or `\c` (24-bit RGB as 0xRRGGBB).
+/// A colour set inline with `\C` (ACI; `\C256` ByLayer, `\C0` ByBlock) or `\c` (24-bit RGB
+/// as 0xRRGGBB).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MTextColor {
     Aci(u16),
     Rgb(u32),
+    ByLayer,
+    ByBlock,
 }
 
 /// MTEXT layout parameters.
@@ -349,7 +352,12 @@ fn parse(contents: &str, base: Fmt) -> (Vec<Atom>, Vec<Fmt>) {
                         let (a, n) = arg(&chars, i);
                         i = n;
                         if let Ok(v) = a.trim().parse::<u16>() {
-                            let col = if v == 0 || v >= 256 { None } else { Some(MTextColor::Aci(v)) };
+                            let col = match v {
+                                0 => Some(MTextColor::ByBlock),
+                                256 => Some(MTextColor::ByLayer),
+                                1..=255 => Some(MTextColor::Aci(v)),
+                                _ => None,
+                            };
                             derive(&mut fmts, &mut cur, &|f| f.color = col);
                         }
                     }

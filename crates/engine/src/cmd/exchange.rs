@@ -38,7 +38,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("export", "Export...", run_export)
             .menu(&["File", "Export..."])
             .alias(&["exp"])
-            .params("{path? (else returns base64 `data`), format?: dxf|dwg|svg|png|pdf (default: the path's extension)} → {format, bytes, path? | data}")
+            .params("{path? (else returns base64 `data`), format?: dxf|dwg|svg|png|pdf (default: the path's extension), layout?: current|\"Model\"|<name> (which space a picture shows)} → {format, bytes, path? | data}")
             .noundo(),
         CommandSpec::new("preview", "Plot Preview", run_preview)
             .menu(&["File", "Plot Preview"])
@@ -93,8 +93,33 @@ fn write_file(cmd: &str, path: &str, bytes: &[u8]) -> Result<()> {
 
 // ---------- EXPORT ----------
 
+/// Whether a file name is written as a picture (PNG, SVG or PDF): the formats whose content
+/// depends on the space shown, unlike DXF and DWG, which always hold the whole drawing.
+pub(crate) fn is_picture(path: &str) -> bool {
+    matches!(extension(path).as_str(), "png" | "svg" | "pdf")
+}
+
+/// The bytes of the picture `name` for `space` (`None`: the space the app is showing). A
+/// **layout** is plotted from its own page setup, so exporting while a layout tab is active gives
+/// that layout, as AutoCAD's Save-as-PDF and EXPORT do (issue #1321, item 15); model space and
+/// builds without a plotter go through the file writer, which frames model space.
+pub(crate) fn picture_bytes(s: &Session, cmd: &str, name: &str, space: Option<Space>) -> Result<Vec<u8>> {
+    let hooks = io().ok_or_else(|| bad(cmd, "file formats are not available in this build"))?;
+    let space = match space {
+        Some(space) => space,
+        None => s.space(),
+    };
+    if is_picture(name)
+        && space.layout().is_some()
+        && let Some(plot) = hooks.plot
+    {
+        let opts = json!({ "output": extension(name), "compress": true });
+        return plot(s.doc()?, &space, &opts).map_err(|e| bad(cmd, e));
+    }
+    (hooks.write)(s.doc()?, name).map_err(|e| bad(cmd, e))
+}
+
 fn run_export(s: &mut Session, p: &Value) -> Result<Value> {
-    let hooks = io().ok_or_else(|| bad("export", "file formats are not available in this build"))?;
     let path = str_param(p, "path");
     let format = match str_param(p, "format") {
         Some(f) => f.trim().trim_start_matches('.').to_ascii_lowercase(),
@@ -103,7 +128,8 @@ fn run_export(s: &mut Session, p: &Value) -> Result<Value> {
     if !EXPORT_FORMATS.contains(&format.as_str()) {
         return Err(bad("export", "`format` must be dxf, dwg, svg, png or pdf (or give a `path` with one of those extensions)"));
     }
-    let bytes = (hooks.write)(s.doc()?, &format!("export.{format}")).map_err(|e| bad("export", e))?;
+    // A layout plots; model space is world space and is rendered by the file writer.
+    let bytes = picture_bytes(s, "export", &format!("export.{format}"), Some(plot_space("export", s, p)?))?;
     match path {
         Some(path) => {
             write_file("export", path, &bytes)?;
@@ -341,11 +367,15 @@ fn run_preview(s: &mut Session, p: &Value) -> Result<Value> {
     let b = list.bounds;
     // Paper point q shows drawing point (q - to) / k + from.
     let (from, k, to) = if fit || space == Space::Model {
-        (if b.is_empty() { Vec2::ZERO } else { b.center() }, plot_scale(&b, &sheet, fit, scale), sheet.printable.center())
+        let paper = sheet.printable_on_paper();
+        (if b.is_empty() { Vec2::ZERO } else { b.center() }, plot_scale(&b, &sheet, fit, scale), paper.center())
     } else {
-        (Vec2::ZERO, plot_scale(&b, &sheet, fit, scale), Vec2::ZERO)
+        // A layout at 1:1: paper space (0,0) is the printable area's corner, the sheet's lower-left
+        // the page setup's margins and plot origin down and left of it.
+        (Vec2::ZERO, plot_scale(&b, &sheet, fit, scale), -sheet.bounds().min)
     };
-    let world = Bounds2::new((Vec2::ZERO - to) / k + from, (sheet.size - to) / k + from);
+    let sb = sheet.bounds();
+    let world = Bounds2::new((sb.min - to) / k + from, (sb.max - to) / k + from);
     if ![world.min.x, world.min.y, world.max.x, world.max.y].iter().all(|v| v.is_finite()) {
         return Err(bad("preview", "the drawing is too large to preview at this scale"));
     }

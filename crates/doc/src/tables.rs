@@ -749,6 +749,10 @@ pub struct PageSetup {
     pub width_mm: f64,
     pub height_mm: f64,
     pub margins_mm: [f64; 4],
+    /// Plot origin (X, Y) in millimetres from the printable area's lower-left corner: the paper
+    /// the layout is drawn on sits that much further down and left of paper space (0,0), as the
+    /// plot's "Plot offset (origin set to printable area)" does (PLOTSETTINGS 46/47).
+    pub plot_origin_mm: [f64; 2],
     pub landscape: bool,
     /// "layout" | "extents" | "display" | "window" | "limits".
     pub plot_area: String,
@@ -777,6 +781,7 @@ impl Default for PageSetup {
             width_mm: 215.9,
             height_mm: 279.4,
             margins_mm: [6.35, 6.35, 6.35, 6.35],
+            plot_origin_mm: [0.0, 0.0],
             landscape: true,
             plot_area: "layout".into(),
             scale_to_fit: false,

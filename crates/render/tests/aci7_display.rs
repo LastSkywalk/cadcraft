@@ -47,11 +47,11 @@ fn cases() -> (Drawing, Vec<(&'static str, Rgb, Rgb)>) {
         ("index 7", c(Color::Index(7)), line(1.0), BLACK, WHITE),
         ("ByBlock in a colour-7 insert", c(Color::Index(7)), insert(2.0), BLACK, WHITE),
         ("index 51 (light yellow)", c(Color::Index(51)), line(3.0), light_yellow, light_yellow),
-        ("index 255 (white)", c(Color::Index(255)), line(4.0), WHITE, WHITE),
+        ("index 255 (the palette's white)", c(Color::Index(255)), line(4.0), aci_rgb(255), aci_rgb(255)),
         ("true-colour white", c(Color::True(WHITE)), line(5.0), WHITE, WHITE),
         ("index 250 (dark grey)", c(Color::Index(250)), line(6.0), dark_grey, dark_grey),
         ("true-colour black", c(Color::True(BLACK)), line(7.0), BLACK, BLACK),
-        ("ByBlock in an index-255 insert", c(Color::Index(255)), insert(8.0), WHITE, WHITE),
+        ("ByBlock in an index-255 insert", c(Color::Index(255)), insert(8.0), aci_rgb(255), aci_rgb(255)),
     ];
     let mut out = Vec::new();
     for (name, common, kind, paper, canvas) in rows {

@@ -148,6 +148,29 @@ pub fn wide_polyline(p: &LwPolyline, tol: f64) -> Vec<Vec2> {
     out
 }
 
+/// The zero-width segments of a polyline that has widths elsewhere: [`wide_polyline`] gives
+/// them no area, and they draw as thin lines, one point list each.
+pub fn thin_segments(p: &LwPolyline, tol: f64) -> Vec<Vec<Vec2>> {
+    if p.const_width > 0.0 {
+        return Vec::new();
+    }
+    let pl = Polyline { vertices: p.vertices.clone(), closed: p.closed };
+    let n = p.vertices.len();
+    let mut out = Vec::new();
+    for (i, seg) in pl.segments().iter().enumerate() {
+        let v = p.vertices.get(i % n.max(1)).copied().unwrap_or_default();
+        if v.start_width > 0.0 || v.end_width > 0.0 {
+            continue;
+        }
+        let mut pts = Vec::new();
+        seg.tessellate(tol, &mut pts);
+        if pts.len() >= 2 {
+            out.push(pts);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

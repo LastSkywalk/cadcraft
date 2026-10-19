@@ -427,17 +427,17 @@ fn sheet(d: &Drawing, space: &Space, o: &PdfOptions, links_to: &[(Handle, String
         let (from, to) = placement(space, &b, fit, &sheet, o);
         Map { from, s, to, k }
     } else {
-        Map { from: Vec2::ZERO, s, to: Vec2::ZERO, k }
+        // A layout plots 1:1 with paper space (0,0) at the printable area's lower-left corner, so
+        // the paper rectangle the layout is drawn on starts `origin` below and left of it.
+        Map { from: Vec2::ZERO, s, to: -sheet.origin, k }
     };
     // Plot style ends, joins and fill patterns at the plot scale (a layout's are already drawn).
     let mut list = list;
     cadcraft_render::pen::apply(&mut list, map.s * unit_mm);
     let media = sheet.size * k;
-    let clip_pt = if fit || matches!(space, Space::Model) {
-        Bounds2::new(sheet.printable.min * k, sheet.printable.max * k)
-    } else {
-        Bounds2::new(Vec2::ZERO, media)
-    };
+    // A plot draws the printable area only: what lies in the margins is cut off, as it is on paper.
+    let paper = sheet.printable_on_paper();
+    let clip_pt = Bounds2::new(paper.min * k, paper.max * k);
     // The layers drawn on, in order of first use.
     let mut layers: Vec<u32> = Vec::new();
     if o.layers {
@@ -462,15 +462,17 @@ pub(crate) fn placement(space: &Space, bounds: &Bounds2, fit: bool, sheet: &Shee
         } else {
             bounds.min
         };
+        let paper = sheet.printable_on_paper();
         let to = if o.center.unwrap_or(true) {
-            sheet.printable.center()
+            paper.center()
         } else {
             let offset = o.offset.unwrap_or([0.0, 0.0]);
-            sheet.printable.min + Vec2::new(offset[0] / sheet.unit_mm, offset[1] / sheet.unit_mm)
+            paper.min + Vec2::new(offset[0] / sheet.unit_mm, offset[1] / sheet.unit_mm)
         };
         (from, to)
     } else if fit {
-        (if bounds.is_empty() { Vec2::ZERO } else { bounds.center() }, sheet.printable.center())
+        let paper = sheet.printable_on_paper();
+        (if bounds.is_empty() { Vec2::ZERO } else { bounds.center() }, paper.center())
     } else {
         (Vec2::ZERO, Vec2::ZERO)
     }

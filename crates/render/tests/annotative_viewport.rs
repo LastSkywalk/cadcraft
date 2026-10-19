@@ -18,8 +18,9 @@ fn viewport(x: f64, scale: f64) -> Viewport {
     .unwrap()
 }
 
-/// A metric drawing with annotative text 2.5 high on paper supporting 1:50 and 1:100, seen
-/// through one viewport at `scale`.
+/// A metric drawing with annotative text supporting 1:50 and 1:100, seen through one viewport at
+/// `scale`. Its geometry is stored at its own scale, the first it supports, as AutoCAD stores an
+/// annotative object's (issue #1321): 2.5 on paper at 1:50 is 125 model units.
 fn drawing(scale: f64, all_visible: bool) -> Drawing {
     let mut d = Drawing::new_metric();
     d.header.set_i64("ANNOALLVISIBLE", i64::from(all_visible));
@@ -27,7 +28,7 @@ fn drawing(scale: f64, all_visible: bool) -> Drawing {
     let text = Text {
         insert: Vec3::ZERO,
         align_pt: None,
-        height: 2.5,
+        height: 125.0,
         value: "ROOM".into(),
         rotation: 0.0,
         width_factor: 1.0,
@@ -82,5 +83,6 @@ fn model_space_uses_cannoscale() {
     d.header.set_str("CANNOSCALE", "1:100");
     assert!(list(&d) > 0);
     let b = build(&d, &Space::Model, &Options::default()).bounds;
+    // Stored at 1:50, seen at 1:100: 125 × 100/50 = 250 model units.
     assert!(b.height() > 150.0 && b.height() < 350.0, "{}", b.height());
 }

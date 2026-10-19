@@ -110,6 +110,20 @@ pub fn set_annotative(e: &mut Entity, on: bool, current: &AnnoScale) {
     }
 }
 
+/// `e` as an object **made** at annotation scale `scale`: it becomes annotative at that scale and
+/// the sizes it carries are taken for paper sizes and stored at that scale, the way AutoCAD stores
+/// an annotative object's geometry at the annotation scale it was made at (issue #1321). A kind
+/// that can't be annotative, and an object that is annotative already, come back unchanged — this
+/// is for a new object, where the caller holds paper sizes; [`set_annotative`] turns an existing
+/// object's own geometry annotative without touching it.
+pub fn made_annotative_at(e: &mut Entity, scale: &AnnoScale) {
+    if !can_be_annotative(&e.kind) || !e.common.anno_scales.is_empty() {
+        return;
+    }
+    e.common.anno_scales.push(scale.clone());
+    *e = anno_scaled(e, scale.factor());
+}
+
 /// How an object draws in a view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AnnoDraw {
@@ -132,27 +146,36 @@ impl Common {
     }
 }
 
-/// How `e` draws in a view whose annotation scale is `view` (drawing units per paper unit). An
-/// object that doesn't support the view's scale shows at its first scale when `all_visible`.
+/// How `e` draws in a view whose annotation scale is `view` (drawing units per paper unit). The
+/// geometry is stored at the object's **own** scale (the first it supports), the way AutoCAD
+/// stores an annotative object: its model geometry at the annotation scale it was made at. A view
+/// at that scale draws it as stored, another scales it in proportion. An object that doesn't
+/// support the view's scale shows as stored (its own scale) when `all_visible`.
 pub fn anno_draw(e: &Entity, view: f64, all_visible: bool) -> AnnoDraw {
     if !is_annotative(e) {
         return AnnoDraw::Plain;
     }
+    let sane = |v: f64| if v.is_finite() && v > 0.0 { v } else { 1.0 };
+    let own = e.common.anno_scales.first().map_or(1.0, |s| sane(s.factor()));
     if e.common.supports_factor(view) {
-        return AnnoDraw::Scaled(if view.is_finite() && view > 0.0 { view } else { 1.0 });
+        return AnnoDraw::Scaled(sane(view) / own);
     }
     match e.common.anno_scales.first() {
-        Some(s) if all_visible => AnnoDraw::Scaled(s.factor()),
+        Some(_) if all_visible => AnnoDraw::Scaled(1.0),
         _ => AnnoDraw::Hidden,
     }
 }
 
-/// `e` as it draws at annotation scale `f`: its paper sizes (text height and width, dimension
-/// overall scale, multileader arrow, landing and content, hatch pattern scale, block scale and
-/// attributes) multiplied by `f`. A dimension is drawn from its definition at that scale, not
-/// from a stored geometry block. Other kinds come back unchanged.
+/// `e` scaled by `f` for a view at that annotation scale: the sizes that carry a paper size (text
+/// height and width, dimension overall scale, multileader arrow, landing and content, hatch
+/// pattern scale, block scale and attributes) multiplied by `f`. `f` is the view's scale over the
+/// object's own ([`anno_draw`]), so an object whose geometry is stored at its own scale comes out
+/// at the view's. A dimension at its own scale keeps the definition block of AutoCAD's own render
+/// of it, and one that has to be drawn at another scale is regenerated from its definition. Other
+/// kinds come back unchanged.
 pub fn anno_scaled(e: &Entity, f: f64) -> Entity {
     let f = if f.is_finite() && f > 0.0 { f } else { 1.0 };
+    let own = e.common.anno_scales.first().map_or(1.0, |s| if s.is_valid() { s.factor() } else { 1.0 });
     let mut out = e.clone();
     match &mut out.kind {
         EntityKind::Text(t) => t.height *= f,
@@ -164,8 +187,18 @@ pub fn anno_scaled(e: &Entity, f: f64) -> Entity {
             }
         }
         EntityKind::Dimension(dm) => {
-            dm.overrides.insert("scale".into(), serde_json::json!(f));
-            dm.block = None;
+            // A dimension from a file carries the render AutoCAD made of it, as the anonymous
+            // block of its own annotation scale: a view at that scale draws that block as it
+            // stands, which is AutoCAD's own geometry, and another scale drops it. A dimension
+            // without one draws from its definition, whose sizes are its style's — an annotative
+            // dimension style holds paper sizes with DIMSCALE 0, so the annotation scale itself
+            // multiplies them, which is the view's scale (`f` is the ratio to the object's own).
+            if !same_factor(f, 1.0) {
+                dm.block = None;
+            }
+            if dm.block.is_none() {
+                dm.overrides.insert("scale".into(), serde_json::json!(f * own));
+            }
         }
         EntityKind::MLeader(m) => {
             let land = m.landing;

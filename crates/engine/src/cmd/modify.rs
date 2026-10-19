@@ -1258,7 +1258,14 @@ pub(crate) fn explode_kind(d: &cadcraft_doc::Drawing, e: &Entity) -> Option<Vec<
             _ => e.clone(),
         };
         se.common.anno_scales.clear();
-        return explode_kind(d, &se);
+        let mut parts = explode_kind(d, &se)?;
+        // The pieces are what the object draws at the current annotation scale, so they are not
+        // annotative themselves and don't scale a second time — including a block's own objects,
+        // which may carry scales of their own (issue #1321).
+        for p in &mut parts {
+            p.common.anno_scales.clear();
+        }
+        return Some(parts);
     }
     match &e.kind {
         EntityKind::LwPolyline(p) => {

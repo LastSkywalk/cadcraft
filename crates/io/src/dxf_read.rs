@@ -179,6 +179,16 @@ fn mtext_from(tags: &[Tag], c: &Common) -> MText {
 }
 
 fn text_from(t: &T) -> Text {
+    text_with_valign(t, t.i(73))
+}
+
+/// An ATTRIB/ATTDEF: its vertical alignment is group 74, and 73 is the field length (DXF
+/// Reference), which DWG converters write as `73 = 0`.
+fn attrib_text_from(t: &T) -> Text {
+    text_with_valign(t, t.i(74))
+}
+
+fn text_with_valign(t: &T, valign: Option<i64>) -> Text {
     let h = match t.i(72).unwrap_or(0) {
         1 => HAlign::Center,
         2 => HAlign::Right,
@@ -187,7 +197,7 @@ fn text_from(t: &T) -> Text {
         5 => HAlign::Fit,
         _ => HAlign::Left,
     };
-    let v = match t.i(73).or_else(|| t.i(74)).unwrap_or(0) {
+    let v = match valign.unwrap_or(0) {
         1 => VAlign::Bottom,
         2 => VAlign::Middle,
         3 => VAlign::Top,
@@ -372,7 +382,7 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
             let (own, embedded) = split_embedded(tags);
             let multiline = multiline_attrib(embedded, &c);
             let own = T(own);
-            let mut text = text_from(&own);
+            let mut text = attrib_text_from(&own);
             if let Some(m) = &multiline {
                 text.value.clone_from(&m.read_as);
             }
@@ -485,7 +495,9 @@ fn entity(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKind)> {
             center: t.p(10),
             width: t.fd(40, 1.0),
             height: t.fd(41, 1.0),
-            view_center: Vec2::new(t.fd(12, 0.0), t.fd(22, 0.0)),
+            // The view center is in display coordinates, whose origin is the view target
+            // (17/27/37); plan views only, so the target's XY moves it into world coordinates.
+            view_center: Vec2::new(t.fd(12, 0.0) + t.fd(17, 0.0), t.fd(22, 0.0) + t.fd(27, 0.0)),
             view_height: t.fd(45, 1.0),
             id: t.i(69).unwrap_or(0) as u32,
             locked: t.i(90).unwrap_or(0) & 16384 != 0,
@@ -1181,7 +1193,7 @@ fn parse_entities(recs: &[(String, Vec<Tag>)], d: &mut Drawing, rx: &mut Rx, ski
                             let (own, embedded) = split_embedded(t2);
                             let multiline = multiline_attrib(embedded, &common(&tt));
                             let own = T(own);
-                            let mut text = text_from(&own);
+                            let mut text = attrib_text_from(&own);
                             if let Some(m) = &multiline {
                                 text.value.clone_from(&m.read_as);
                             }
@@ -1664,7 +1676,7 @@ pub fn read(bytes: &[u8]) -> Result<Drawing> {
     let mut blocks: Vec<(String, Vec3, String, Vec<(Option<String>, bool, Entity)>, i64)> = Vec::new();
     let mut layout_objs: Vec<(String, u32, String, PageSetup)> = Vec::new();
     let mut entities = Vec::new();
-    let mut objs = Objects::default();
+    let mut objs = Objects { xdicts: xdicts(&secs), ..Objects::default() };
     // Every handle another program's file already uses is taken before anything gets a new one:
     // its $HANDSEED can be lower than its handles, and entities made while reading (the faces of
     // a polyface mesh) would otherwise get handles that records further on still have. A file
@@ -1915,12 +1927,41 @@ fn apply_sortents(
 }
 
 /// Non-graphical objects applied once every entity is placed.
+/// The extension dictionary handle of a record: the handle after `102 {ACAD_XDICTIONARY`.
+fn xdict_handle(tags: &[Tag]) -> Option<String> {
+    let i = tags.iter().position(|t| t.code == 102 && t.str().trim() == "{ACAD_XDICTIONARY")?;
+    tags.get(i + 1..).unwrap_or(&[]).iter().find(|t| t.code == 360).map(|t| t.str().trim().to_ascii_uppercase())
+}
+
+/// Entity extension dictionaries, by object handle. AutoCAD hangs an annotative object's scale
+/// contexts there ([`Objects::native_anno`]); other extension dictionaries are kept raw.
+fn xdicts(secs: &[cadcraft_dxf::Section]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for tags in secs.iter().filter(|s| matches!(s.name.as_str(), "ENTITIES" | "BLOCKS")).map(|s| &s.tags) {
+        for (_, rec) in records(tags) {
+            let (Some(handle), Some(dict)) = (T(&rec).s(5), xdict_handle(&rec)) else { continue };
+            if out.len() < MAX_OBJECTS {
+                out.insert(handle.trim().to_ascii_uppercase(), dict);
+            }
+        }
+    }
+    out
+}
+
 #[derive(Default)]
 struct Objects {
     /// Dictionary entry handle (upper case) → entry name.
     names: HashMap<String, String>,
-    /// SCALE objects (the annotation scale list), in file order.
-    scales: Vec<cadcraft_doc::AnnoScale>,
+    /// DICTIONARY handle (upper case) → the handles its entries point at.
+    dicts: HashMap<String, Vec<String>>,
+    /// SCALE objects (the annotation scale list), with their handles, in file order.
+    scales: Vec<(String, cadcraft_doc::AnnoScale)>,
+    /// Annotation scale context data: object handle → the scale handle it holds
+    /// (`AcDbAnnotScaleObjectContextData` 340). AutoCAD gives every annotative object one per
+    /// scale it supports; that is where an annotative object's scales live in its own files.
+    contexts: HashMap<String, String>,
+    /// Object handle → its extension dictionary (`102 {ACAD_XDICTIONARY`).
+    xdicts: HashMap<String, String>,
     /// XRECORD handle (upper case) → its groups.
     xrecords: HashMap<String, Vec<Tag>>,
     /// TABLESTYLE objects: (handle, groups).
@@ -1938,16 +1979,28 @@ struct Objects {
 }
 
 const MAX_OBJECTS: usize = 1_000_000;
+/// Deepest chain of dictionaries followed from an object to its annotation scale contexts.
+const MAX_ANNO_DEPTH: usize = 8;
 
 impl Objects {
     fn add(&mut self, kind: &str, tags: &[Tag]) {
         let h = T(tags).s(5).map(|h| h.trim().to_ascii_uppercase()).unwrap_or_default();
+        // Annotation scale context data: the class name is the object's own
+        // (`ACDB_MTEXTOBJECTCONTEXTDATA_CLASS` and friends), the marker is not.
+        if tags.iter().any(|t| t.code == 100 && t.str() == "AcDbAnnotScaleObjectContextData") {
+            if let Some(scale) = tags.iter().find(|t| t.code == 340)
+                && self.contexts.len() < MAX_OBJECTS
+            {
+                self.contexts.insert(h, scale.str().trim().to_ascii_uppercase());
+            }
+            return;
+        }
         match kind {
             "SCALE" if self.scales.len() < cadcraft_doc::MAX_SCALES => {
                 if let Some(s) = crate::dxf_ext::read_scale(tags)
-                    && !self.scales.iter().any(|x| x.name.eq_ignore_ascii_case(&s.name))
+                    && !self.scales.iter().any(|(_, x)| x.name.eq_ignore_ascii_case(&s.name))
                 {
-                    self.scales.push(s);
+                    self.scales.push((h, s));
                 }
             }
             "DICTIONARY" => {
@@ -1956,10 +2009,14 @@ impl Objects {
                     match t.code {
                         3 => name = Some(t.str()),
                         350 | 360 => {
+                            let value = t.str().trim().to_ascii_uppercase();
+                            if self.dicts.get(&h).map_or(0, Vec::len) < MAX_OBJECTS {
+                                self.dicts.entry(h.clone()).or_default().push(value.clone());
+                            }
                             if let Some(n) = name.take()
                                 && self.names.len() < MAX_OBJECTS
                             {
-                                self.names.insert(t.str().trim().to_ascii_uppercase(), n);
+                                self.names.insert(value, n);
                             }
                         }
                         _ => {}
@@ -1985,6 +2042,52 @@ impl Objects {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The scales AutoCAD gives annotative objects: an object's extension dictionary leads,
+    /// through the dictionaries it holds, to its context data, and each holds a SCALE reference.
+    /// Objects of a kind that can be annotative get those scales; everything else keeps none.
+    fn native_anno(&self, d: &mut Drawing) {
+        if self.contexts.is_empty() || self.xdicts.is_empty() {
+            return;
+        }
+        let by_handle: HashMap<&str, &cadcraft_doc::AnnoScale> = self.scales.iter().map(|(h, s)| (h.as_str(), s)).collect();
+        let mut applied = 0usize;
+        for (object, dict) in &self.xdicts {
+            if applied >= MAX_OBJECTS {
+                break;
+            }
+            let Some(handle) = Handle::parse_hex(object) else { continue };
+            // The extension dictionary itself, then the dictionaries it holds: AutoCAD writes the
+            // annotation scale dictionary directly or an `AcDbContextDataManager` deeper, so walk
+            // what is reachable (breadth first, each dictionary once) rather than one shape.
+            let mut scales: Vec<cadcraft_doc::AnnoScale> = Vec::new();
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            let mut queue: Vec<&str> = vec![dict.as_str()];
+            while let Some(h) = queue.pop() {
+                if !seen.insert(h) || seen.len() > MAX_ANNO_DEPTH {
+                    continue;
+                }
+                for v in self.dicts.get(h).into_iter().flatten() {
+                    match self.contexts.get(v).and_then(|sh| by_handle.get(sh.as_str())) {
+                        Some(s) if scales.len() < cadcraft_doc::MAX_SCALES && !scales.iter().any(|x| x.name.eq_ignore_ascii_case(&s.name)) => {
+                            scales.push((*s).clone());
+                        }
+                        Some(_) => {}
+                        None => queue.push(v.as_str()),
+                    }
+                }
+            }
+            if scales.is_empty() {
+                continue;
+            }
+            let _ = d.modify_entity(handle, |e| {
+                if cadcraft_doc::can_be_annotative(&e.kind) {
+                    e.common.anno_scales = scales;
+                }
+            });
+            applied += 1;
         }
     }
 
@@ -2041,12 +2144,14 @@ impl Objects {
             d.parametric = p;
         }
         // The annotation scale list (a metric drawing without one gets the metric defaults),
-        // then CADCraft's annotative scaling record.
+        // then AutoCAD's own annotative scaling, then CADCraft's record (which wins: it is what
+        // this drawing was saved with).
         if !self.scales.is_empty() {
-            d.scales = self.scales.clone();
+            d.scales = self.scales.iter().map(|(_, s)| s.clone()).collect();
         } else if d.header.i64("MEASUREMENT", 0) == 1 {
             d.scales = cadcraft_doc::metric_scales();
         }
+        self.native_anno(d);
         if let Some(p) = self.xrecord_text(crate::dxf_ext::ANNOTATION_KEY).and_then(|t| crate::dxf_ext::parse_anno(&t)) {
             crate::dxf_ext::apply_anno(d, p);
         }
@@ -2212,6 +2317,13 @@ fn page_setup(t: &T) -> PageSetup {
     // Plot paper units 1: millimetres. 0 (inches) is left to MEASUREMENT: earlier CADCraft
     // versions wrote 0 for every layout.
     p.paper_mm = t.i(72) == Some(1);
+    // Plot origin (46/47) in millimetres from the printable area's lower-left corner; it may be
+    // negative (the plot moved left/down), so it takes a signed range.
+    let mm_signed = |code: i32, d: f64| {
+        let v = t.fd(code, d);
+        if v.is_finite() && v.abs() <= 100_000.0 { v } else { d }
+    };
+    p.plot_origin_mm = [mm_signed(46, 0.0), mm_signed(47, 0.0)];
     // Plot rotation 1 or 3 turns the media a quarter turn; media defined wider than tall is
     // already landscape.
     let rotated = matches!(t.i(73), Some(1 | 3));

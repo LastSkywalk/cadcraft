@@ -136,63 +136,271 @@ pub fn aci_rgb(i: u8) -> Rgb {
     PALETTE.get(usize::from(i)).copied().unwrap_or(Rgb(255, 255, 255))
 }
 
-/// The palette as a 256-entry table (entry 0 = ByBlock placeholder = black).
-pub static PALETTE: std::sync::LazyLock<[Rgb; 256]> = std::sync::LazyLock::new(build_palette);
-
-fn build_palette() -> [Rgb; 256] {
-    let mut p = [Rgb(0, 0, 0); 256];
-    let base = [
-        Rgb(0, 0, 0),
-        Rgb(255, 0, 0),
-        Rgb(255, 255, 0),
-        Rgb(0, 255, 0),
-        Rgb(0, 255, 255),
-        Rgb(0, 0, 255),
-        Rgb(255, 0, 255),
-        Rgb(255, 255, 255),
-        Rgb(128, 128, 128),
-        Rgb(192, 192, 192),
-    ];
-    for (slot, c) in p.iter_mut().zip(base) {
-        *slot = c;
-    }
-    let values = [255.0, 165.0, 127.0, 76.0, 38.0];
-    for i in 10..250usize {
-        let hue = (i - 10) / 10; // 0..24, 15° each
-        let sub = i % 10;
-        let v: f64 = values.get(sub / 2).copied().unwrap_or(255.0);
-        let half = sub % 2 == 1;
-        let (r, g, b) = hue_fractions(hue);
-        let ch = |f: f64| -> u8 {
-            let f = if half { 0.5 + 0.5 * f } else { f };
-            (v * f).floor().clamp(0.0, 255.0) as u8
-        };
-        if let Some(slot) = p.get_mut(i) {
-            *slot = Rgb(ch(r), ch(g), ch(b));
-        }
-    }
-    let greys = [51u8, 91, 132, 173, 214, 255];
-    for (k, g) in greys.iter().enumerate() {
-        if let Some(slot) = p.get_mut(250 + k) {
-            *slot = Rgb(*g, *g, *g);
-        }
-    }
-    p
-}
-
-/// Channel fractions for hue step 0..24 (red → yellow → green → cyan → blue → magenta → red).
-fn hue_fractions(h: usize) -> (f64, f64, f64) {
-    let seg = h / 4;
-    let t = (h % 4) as f64 / 4.0;
-    match seg {
-        0 => (1.0, t, 0.0),
-        1 => (1.0 - t, 1.0, 0.0),
-        2 => (0.0, 1.0, t),
-        3 => (0.0, 1.0 - t, 1.0),
-        4 => (t, 0.0, 1.0),
-        _ => (1.0, 0.0, 1.0 - t),
-    }
-}
+/// The AutoCAD Color Index as AutoCAD itself draws and plots it, measured on the reference
+/// application: a chart of one line per index, each with its own index colour, plotted with no
+/// plot style table (so the colour reaches the paper unchanged) and read back from the plot.
+/// The 24 hues of 10..=249 step 15° around the wheel, each in five brightnesses and in the five
+/// half-tones half-way to white; 250..=255 are the grey ramp. Entry 0 is the ByBlock
+/// placeholder and entry 7 is white — AutoCAD prints that one black on white paper, which
+/// [`display_rgb`] does.
+pub static PALETTE: [Rgb; 256] = [
+    Rgb(0, 0, 0),
+    Rgb(255, 0, 0),
+    Rgb(255, 255, 0),
+    Rgb(0, 255, 0),
+    Rgb(0, 255, 255),
+    Rgb(0, 0, 255),
+    Rgb(255, 0, 255),
+    Rgb(255, 255, 255),
+    Rgb(128, 128, 128),
+    Rgb(220, 220, 220),
+    Rgb(255, 0, 0),
+    Rgb(255, 127, 127),
+    Rgb(221, 0, 0),
+    Rgb(221, 110, 110),
+    Rgb(184, 0, 0),
+    Rgb(184, 92, 92),
+    Rgb(149, 0, 0),
+    Rgb(149, 74, 74),
+    Rgb(114, 0, 0),
+    Rgb(114, 57, 57),
+    Rgb(255, 63, 0),
+    Rgb(255, 159, 127),
+    Rgb(221, 55, 0),
+    Rgb(221, 138, 110),
+    Rgb(184, 46, 0),
+    Rgb(184, 115, 92),
+    Rgb(149, 37, 0),
+    Rgb(149, 93, 74),
+    Rgb(114, 28, 0),
+    Rgb(114, 71, 57),
+    Rgb(255, 127, 0),
+    Rgb(255, 191, 127),
+    Rgb(221, 110, 0),
+    Rgb(221, 165, 110),
+    Rgb(184, 92, 0),
+    Rgb(184, 138, 92),
+    Rgb(149, 74, 0),
+    Rgb(149, 112, 74),
+    Rgb(114, 57, 0),
+    Rgb(114, 86, 57),
+    Rgb(255, 191, 0),
+    Rgb(255, 223, 127),
+    Rgb(221, 165, 0),
+    Rgb(221, 193, 110),
+    Rgb(184, 138, 0),
+    Rgb(184, 161, 92),
+    Rgb(149, 112, 0),
+    Rgb(149, 131, 74),
+    Rgb(114, 86, 0),
+    Rgb(114, 100, 57),
+    Rgb(255, 255, 0),
+    Rgb(255, 255, 127),
+    Rgb(221, 221, 0),
+    Rgb(221, 221, 110),
+    Rgb(184, 184, 0),
+    Rgb(184, 184, 92),
+    Rgb(149, 149, 0),
+    Rgb(149, 149, 74),
+    Rgb(114, 114, 0),
+    Rgb(114, 114, 57),
+    Rgb(191, 255, 0),
+    Rgb(223, 255, 127),
+    Rgb(165, 221, 0),
+    Rgb(193, 221, 110),
+    Rgb(138, 184, 0),
+    Rgb(161, 184, 92),
+    Rgb(112, 149, 0),
+    Rgb(131, 149, 74),
+    Rgb(86, 114, 0),
+    Rgb(100, 114, 57),
+    Rgb(127, 255, 0),
+    Rgb(191, 255, 127),
+    Rgb(110, 221, 0),
+    Rgb(165, 221, 110),
+    Rgb(92, 184, 0),
+    Rgb(138, 184, 92),
+    Rgb(74, 149, 0),
+    Rgb(112, 149, 74),
+    Rgb(57, 114, 0),
+    Rgb(86, 114, 57),
+    Rgb(63, 255, 0),
+    Rgb(159, 255, 127),
+    Rgb(55, 221, 0),
+    Rgb(138, 221, 110),
+    Rgb(46, 184, 0),
+    Rgb(115, 184, 92),
+    Rgb(37, 149, 0),
+    Rgb(93, 149, 74),
+    Rgb(28, 114, 0),
+    Rgb(71, 114, 57),
+    Rgb(0, 255, 0),
+    Rgb(127, 255, 127),
+    Rgb(0, 221, 0),
+    Rgb(110, 221, 110),
+    Rgb(0, 184, 0),
+    Rgb(92, 184, 92),
+    Rgb(0, 149, 0),
+    Rgb(74, 149, 74),
+    Rgb(0, 114, 0),
+    Rgb(57, 114, 57),
+    Rgb(0, 255, 63),
+    Rgb(127, 255, 159),
+    Rgb(0, 221, 55),
+    Rgb(110, 221, 138),
+    Rgb(0, 184, 46),
+    Rgb(92, 184, 115),
+    Rgb(0, 149, 37),
+    Rgb(74, 149, 93),
+    Rgb(0, 114, 28),
+    Rgb(57, 114, 71),
+    Rgb(0, 255, 127),
+    Rgb(127, 255, 191),
+    Rgb(0, 221, 110),
+    Rgb(110, 221, 165),
+    Rgb(0, 184, 92),
+    Rgb(92, 184, 138),
+    Rgb(0, 149, 74),
+    Rgb(74, 149, 112),
+    Rgb(0, 114, 57),
+    Rgb(57, 114, 86),
+    Rgb(0, 255, 191),
+    Rgb(127, 255, 223),
+    Rgb(0, 221, 165),
+    Rgb(110, 221, 193),
+    Rgb(0, 184, 138),
+    Rgb(92, 184, 161),
+    Rgb(0, 149, 112),
+    Rgb(74, 149, 131),
+    Rgb(0, 114, 86),
+    Rgb(57, 114, 100),
+    Rgb(0, 255, 255),
+    Rgb(127, 255, 255),
+    Rgb(0, 221, 221),
+    Rgb(110, 221, 221),
+    Rgb(0, 184, 184),
+    Rgb(92, 184, 184),
+    Rgb(0, 149, 149),
+    Rgb(74, 149, 149),
+    Rgb(0, 114, 114),
+    Rgb(57, 114, 114),
+    Rgb(0, 191, 255),
+    Rgb(127, 223, 255),
+    Rgb(0, 165, 221),
+    Rgb(110, 193, 221),
+    Rgb(0, 138, 184),
+    Rgb(92, 161, 184),
+    Rgb(0, 112, 149),
+    Rgb(74, 131, 149),
+    Rgb(0, 86, 114),
+    Rgb(57, 100, 114),
+    Rgb(0, 127, 255),
+    Rgb(127, 191, 255),
+    Rgb(0, 110, 221),
+    Rgb(110, 165, 221),
+    Rgb(0, 92, 184),
+    Rgb(92, 138, 184),
+    Rgb(0, 74, 149),
+    Rgb(74, 112, 149),
+    Rgb(0, 57, 114),
+    Rgb(57, 86, 114),
+    Rgb(0, 63, 255),
+    Rgb(127, 159, 255),
+    Rgb(0, 55, 221),
+    Rgb(110, 138, 221),
+    Rgb(0, 46, 184),
+    Rgb(92, 115, 184),
+    Rgb(0, 37, 149),
+    Rgb(74, 93, 149),
+    Rgb(0, 28, 114),
+    Rgb(57, 71, 114),
+    Rgb(0, 0, 255),
+    Rgb(127, 127, 255),
+    Rgb(0, 0, 221),
+    Rgb(110, 110, 221),
+    Rgb(0, 0, 184),
+    Rgb(92, 92, 184),
+    Rgb(0, 0, 149),
+    Rgb(74, 74, 149),
+    Rgb(0, 0, 114),
+    Rgb(57, 57, 114),
+    Rgb(63, 0, 255),
+    Rgb(159, 127, 255),
+    Rgb(55, 0, 221),
+    Rgb(138, 110, 221),
+    Rgb(46, 0, 184),
+    Rgb(115, 92, 184),
+    Rgb(37, 0, 149),
+    Rgb(93, 74, 149),
+    Rgb(28, 0, 114),
+    Rgb(71, 57, 114),
+    Rgb(127, 0, 255),
+    Rgb(191, 127, 255),
+    Rgb(110, 0, 221),
+    Rgb(165, 110, 221),
+    Rgb(92, 0, 184),
+    Rgb(138, 92, 184),
+    Rgb(74, 0, 149),
+    Rgb(112, 74, 149),
+    Rgb(57, 0, 114),
+    Rgb(86, 57, 114),
+    Rgb(191, 0, 255),
+    Rgb(223, 127, 255),
+    Rgb(165, 0, 221),
+    Rgb(193, 110, 221),
+    Rgb(138, 0, 184),
+    Rgb(161, 92, 184),
+    Rgb(112, 0, 149),
+    Rgb(131, 74, 149),
+    Rgb(86, 0, 114),
+    Rgb(100, 57, 114),
+    Rgb(255, 0, 255),
+    Rgb(255, 127, 255),
+    Rgb(221, 0, 221),
+    Rgb(221, 110, 221),
+    Rgb(184, 0, 184),
+    Rgb(184, 92, 184),
+    Rgb(149, 0, 149),
+    Rgb(149, 74, 149),
+    Rgb(114, 0, 114),
+    Rgb(114, 57, 114),
+    Rgb(255, 0, 191),
+    Rgb(255, 127, 223),
+    Rgb(221, 0, 165),
+    Rgb(221, 110, 193),
+    Rgb(184, 0, 138),
+    Rgb(184, 92, 161),
+    Rgb(149, 0, 112),
+    Rgb(149, 74, 131),
+    Rgb(114, 0, 86),
+    Rgb(114, 57, 100),
+    Rgb(255, 0, 127),
+    Rgb(255, 127, 191),
+    Rgb(221, 0, 110),
+    Rgb(221, 110, 165),
+    Rgb(184, 0, 92),
+    Rgb(184, 92, 138),
+    Rgb(149, 0, 74),
+    Rgb(149, 74, 112),
+    Rgb(114, 0, 57),
+    Rgb(114, 57, 86),
+    Rgb(255, 0, 63),
+    Rgb(255, 127, 159),
+    Rgb(221, 0, 55),
+    Rgb(221, 110, 138),
+    Rgb(184, 0, 46),
+    Rgb(184, 92, 115),
+    Rgb(149, 0, 37),
+    Rgb(149, 74, 93),
+    Rgb(114, 0, 28),
+    Rgb(114, 57, 71),
+    Rgb(84, 84, 84),
+    Rgb(118, 118, 118),
+    Rgb(152, 152, 152),
+    Rgb(186, 186, 186),
+    Rgb(219, 219, 219),
+    Rgb(250, 250, 250),
+];
 
 /// The closest index colour to an RGB value (1..=255).
 pub fn nearest_aci(c: Rgb) -> u8 {
@@ -235,20 +443,28 @@ mod tests {
 
     #[test]
     fn palette_known_entries() {
+        // Measured from AutoCAD's own plot of a chart of every index.
         assert_eq!(aci_rgb(1), Rgb(255, 0, 0));
+        assert_eq!(aci_rgb(7), Rgb(255, 255, 255));
+        assert_eq!(aci_rgb(8), Rgb(128, 128, 128));
+        assert_eq!(aci_rgb(9), Rgb(220, 220, 220));
         assert_eq!(aci_rgb(10), Rgb(255, 0, 0));
         assert_eq!(aci_rgb(11), Rgb(255, 127, 127));
-        assert_eq!(aci_rgb(12), Rgb(165, 0, 0));
-        assert_eq!(aci_rgb(13), Rgb(165, 82, 82));
+        assert_eq!(aci_rgb(12), Rgb(221, 0, 0));
+        assert_eq!(aci_rgb(13), Rgb(221, 110, 110));
+        assert_eq!(aci_rgb(18), Rgb(114, 0, 0));
         assert_eq!(aci_rgb(20), Rgb(255, 63, 0));
         assert_eq!(aci_rgb(30), Rgb(255, 127, 0));
         assert_eq!(aci_rgb(50), Rgb(255, 255, 0));
+        assert_eq!(aci_rgb(74), Rgb(92, 184, 0));
         assert_eq!(aci_rgb(90), Rgb(0, 255, 0));
+        assert_eq!(aci_rgb(126), Rgb(0, 149, 112));
         assert_eq!(aci_rgb(130), Rgb(0, 255, 255));
         assert_eq!(aci_rgb(170), Rgb(0, 0, 255));
+        assert_eq!(aci_rgb(184), Rgb(46, 0, 184));
         assert_eq!(aci_rgb(210), Rgb(255, 0, 255));
-        assert_eq!(aci_rgb(250), Rgb(51, 51, 51));
-        assert_eq!(aci_rgb(255), Rgb(255, 255, 255));
+        assert_eq!(aci_rgb(250), Rgb(84, 84, 84));
+        assert_eq!(aci_rgb(255), Rgb(250, 250, 250));
     }
 
     #[test]

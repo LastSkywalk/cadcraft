@@ -51,7 +51,10 @@ fn zoom_center_scale_dynamic_and_paper_space_all() {
     // Paper space: All and Extents (no paper objects) fit the sheet, not the model limits.
     s.execute("layout.set", &json!({ "name": "Layout1" })).unwrap();
     let sheet = s.zoom_limits().unwrap();
-    assert!(sheet.min == Vec2::ZERO && !near(sheet.max.x, 420.0), "the sheet, not the limits: {sheet:?}");
+    // The sheet is the paper rectangle the layout draws on. Paper space (0,0) is the printable
+    // area's lower-left corner, so it lies inside the sheet rather than at its corner, and the
+    // margins put the sheet's edges into negative coordinates (issue #1321).
+    assert!(sheet.contains(Vec2::ZERO) && !near(sheet.max.x, 420.0), "the sheet, not the limits: {sheet:?}");
     s.cmdline("ZOOM E").unwrap();
     assert!(view(&s).center.near(sheet.center(), 1e-9), "{:?} vs {sheet:?}", view(&s));
     s.cmdline("ZOOM A").unwrap();

@@ -512,8 +512,9 @@ fn pdf_layout_one_to_one_with_viewport() {
     let content = check_pdf(&bytes);
     // ANSI A landscape (inches → points).
     assert_eq!(media_box(&bytes), (792.0, 612.0));
-    // Viewport border at 1:1: x from 1in to 9in = 72pt..648pt.
-    assert!(content.contains("72 72 m") || content.contains("72 72 l"), "{content}");
+    // Paper space (0,0) is the printable area's corner — a quarter inch (18pt) in from the
+    // page's — so the viewport border at 1:1, from 1in to 9in, is at 90pt..666pt.
+    assert!(content.contains("90 90 m") || content.contains("90 90 l"), "{content}");
     // Lineweights on: default 0.25 mm = 0.709 pt.
     assert!(content.contains("0.709 w"));
     let off = plot(&d, &paper, &serde_json::json!({"lineweights": false})).unwrap();
@@ -1660,6 +1661,7 @@ fn mleader_is_written_as_multileader() {
         arrow_size: 2.5,
         spline: false,
         block: None,
+        shelf: false,
     };
     d.add(&Space::Model, Default::default(), EntityKind::MLeader(m.clone())).unwrap();
     // MULTILEADER is a 2007 entity (R2000/2004 files get LEADER + MTEXT).
