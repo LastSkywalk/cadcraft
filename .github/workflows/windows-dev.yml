@@ -1,0 +1,40 @@
+# A portable, unsigned Windows x64 build of the branch this runs on, to check a change on a real
+# Windows machine before it becomes a pull request. `release.yml` does the signed, versioned
+# build; this is the same `packaging/windows/package.ps1 -Arch x64` without the signing step,
+# which skips itself when no signing secrets are set (a fork has none).
+name: Windows dev build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out craft-fonts
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@main
+        with:
+          ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install WiX
+        uses: storytold/craft-common-actions/actions/install-wix@main
+      - name: Build and package
+        shell: pwsh
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: ./packaging/windows/package.ps1 -Arch x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cadcraft-windows-x64
+          path: dist/release/*
+          if-no-files-found: error
