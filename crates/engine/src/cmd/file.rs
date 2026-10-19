@@ -137,7 +137,12 @@ fn write_bytes(s: &Session, cmd: &str, path: &str, opts: &SaveAs) -> Result<Vec<
     if opts.binary && !is_dxf(path) {
         return Err(bad(cmd, "binary applies to DXF files only"));
     }
-    // A drawing file is the drawing outside the Block Editor; an image is what is shown.
+    // A picture of a layout tab is that layout, as AutoCAD's Save-as-PDF writes it; DXF and DWG
+    // always hold the whole drawing, so they go through the writer below.
+    if super::exchange::is_picture(path) {
+        return super::exchange::picture_bytes(s, cmd, path, None);
+    }
+    // A drawing file is the drawing outside the Block Editor; a picture is what is shown.
     let d: &cadcraft_doc::Drawing = if is_drawing_file(path) { s.state()?.drawing() } else { s.doc()? };
     let r = if *opts == SaveAs::default() {
         (hooks.write)(d, path)

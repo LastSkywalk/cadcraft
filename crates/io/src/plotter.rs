@@ -99,7 +99,8 @@ fn png(d: &Drawing, space: &Space, opts: &Value) -> Result<Vec<u8>> {
         let center = from + (half - to) / s;
         raster::View { center, scale: k * s, width, height }
     } else {
-        raster::View { center: half, scale: k, width, height }
+        // The image covers the sheet, which starts `origin` below and left of paper space (0,0).
+        raster::View { center: sheet.bounds().center(), scale: k, width, height }
     };
     let px_per_mm = if lineweights { (k / sheet.unit_mm) as f32 } else { 0.0 };
     let ro = raster::RasterOptions { background: Rgb(255, 255, 255), hairline: 1.0, px_per_mm, antialias: true };
@@ -175,24 +176,33 @@ mod tests {
         let metric = drawing();
         let metric_sheet = Sheet::from_page(&pdf::page_for(&metric, &model, &PdfOptions::default()).unwrap(), 1.0);
         let centered = PdfOptions::from_json(&json!({"center": true}));
-        assert_eq!(pdf::placement(&model, &bounds, true, &metric_sheet, &PdfOptions::default()), (bounds.center(), metric_sheet.printable.center()));
-        assert_eq!(pdf::placement(&model, &bounds, true, &metric_sheet, &centered), (bounds.center(), metric_sheet.printable.center()));
+        assert_eq!(
+            pdf::placement(&model, &bounds, true, &metric_sheet, &PdfOptions::default()),
+            (bounds.center(), metric_sheet.printable_on_paper().center())
+        );
+        assert_eq!(pdf::placement(&model, &bounds, true, &metric_sheet, &centered), (bounds.center(), metric_sheet.printable_on_paper().center()));
         let moved = PdfOptions::from_json(&json!({"center": false, "offset": [10.0, 20.0]}));
-        assert_eq!(pdf::placement(&model, &bounds, true, &metric_sheet, &moved), (bounds.min, metric_sheet.printable.min + Vec2::new(10.0, 20.0)));
+        assert_eq!(
+            pdf::placement(&model, &bounds, true, &metric_sheet, &moved),
+            (bounds.min, metric_sheet.printable_on_paper().min + Vec2::new(10.0, 20.0))
+        );
         let origin = PdfOptions::from_json(&json!({"center": false}));
-        assert_eq!(pdf::placement(&model, &bounds, true, &metric_sheet, &origin), (bounds.min, metric_sheet.printable.min));
+        assert_eq!(pdf::placement(&model, &bounds, true, &metric_sheet, &origin), (bounds.min, metric_sheet.printable_on_paper().min));
         let negative = PdfOptions::from_json(&json!({"center": false, "offset": [-10.0, -20.0]}));
-        assert_eq!(pdf::placement(&model, &bounds, true, &metric_sheet, &negative), (bounds.min, metric_sheet.printable.min - Vec2::new(10.0, 20.0)));
+        assert_eq!(
+            pdf::placement(&model, &bounds, true, &metric_sheet, &negative),
+            (bounds.min, metric_sheet.printable_on_paper().min - Vec2::new(10.0, 20.0))
+        );
 
         let imperial = Drawing::new_imperial();
         let imperial_sheet = Sheet::from_page(&pdf::page_for(&imperial, &model, &PdfOptions::default()).unwrap(), 25.4);
         assert_eq!(
             pdf::placement(&model, &bounds, true, &imperial_sheet, &moved),
-            (bounds.min, imperial_sheet.printable.min + Vec2::new(10.0 / 25.4, 20.0 / 25.4))
+            (bounds.min, imperial_sheet.printable_on_paper().min + Vec2::new(10.0 / 25.4, 20.0 / 25.4))
         );
         assert_eq!(
             pdf::placement(&model, &bounds, true, &imperial_sheet, &negative),
-            (bounds.min, imperial_sheet.printable.min - Vec2::new(10.0 / 25.4, 20.0 / 25.4))
+            (bounds.min, imperial_sheet.printable_on_paper().min - Vec2::new(10.0 / 25.4, 20.0 / 25.4))
         );
     }
 

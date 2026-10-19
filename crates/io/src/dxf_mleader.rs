@@ -294,6 +294,7 @@ pub(crate) fn read(tags: &[Tag]) -> MLeader {
     };
     let has_block = p.has_block.unwrap_or(p.content == Some(1));
     let has_text = !has_block && p.has_text.unwrap_or(p.content == Some(2));
+    let (attach, shelf) = attach_point(&p, text_location.unwrap_or(landing).x < landing.x);
     let text = has_text.then(|| {
         let rotation = match p.text_direction.get() {
             Some(d) if d.x != 0.0 || d.y != 0.0 => d.y.atan2(d.x),
@@ -303,7 +304,7 @@ pub(crate) fn read(tags: &[Tag]) -> MLeader {
             insert: text_location.unwrap_or(landing),
             height: pos(p.text_height).unwrap_or(def.text_height),
             width: p.text_width.unwrap_or(0.0).max(0.0),
-            attach: attach_point(&p, text_location.unwrap_or(landing).x < landing.x),
+            attach,
             rotation,
             style: def.text_style.clone(),
             contents: p.text.clone().unwrap_or_default(),
@@ -327,6 +328,7 @@ pub(crate) fn read(tags: &[Tag]) -> MLeader {
             row_spacing: 0.0,
         }
     });
+    let shelf = shelf && text.is_some();
     MLeader {
         leaders,
         landing,
@@ -336,12 +338,14 @@ pub(crate) fn read(tags: &[Tag]) -> MLeader {
         arrow_size: pos(p.arrow_ctx).or(pos(p.arrow)).unwrap_or(def.arrow_size),
         spline: p.leader_type == Some(2),
         block,
+        shelf,
     }
 }
 
 /// The MText attachment point (1..=9) of the text: its column from the text side (171), its
-/// row from how the side facing the landing attaches (top line, middle or bottom line).
-fn attach_point(p: &Parsed, text_left_of_landing: bool) -> u8 {
+/// row from how the side facing the landing attaches (top line, middle or bottom line). Also
+/// whether the landing line is the shelf under the text (see [`MLeader::shelf`]).
+fn attach_point(p: &Parsed, text_left_of_landing: bool) -> (u8, bool) {
     let col = p.side.unwrap_or(1).clamp(1, 3);
     let side = if text_left_of_landing { p.right_attach.or(p.left_attach) } else { p.left_attach.or(p.right_attach) };
     let row = match side.unwrap_or(0) {
@@ -349,7 +353,9 @@ fn attach_point(p: &Parsed, text_left_of_landing: bool) -> u8 {
         3..=5 => 2,
         _ => 0,
     };
-    u8::try_from(row * 3 + col).unwrap_or(1)
+    // "Bottom of top line" (and its underlined neighbours) attaches at a line's bottom, where
+    // AutoCAD draws the landing across the whole text.
+    (u8::try_from(row * 3 + col).unwrap_or(1), matches!(side, Some(6..=8)))
 }
 
 /// Text style and block names from the file's STYLE and BLOCK_RECORD handles (upper case →
@@ -494,8 +500,8 @@ pub(crate) fn entity_tags(d: &Drawing, m: &MLeader, r: &Refs) -> Vec<Tag> {
     f(&mut t, 41, text.map_or(style.text_height, |x| x.height));
     f(&mut t, 140, m.arrow_size);
     f(&mut t, 145, style.landing_gap);
-    i(&mut t, 174, vert);
-    i(&mut t, 175, vert);
+    i(&mut t, 174, if m.shelf { 6 } else { vert });
+    i(&mut t, 175, if m.shelf { 6 } else { vert });
     i(&mut t, 176, align);
     i(&mut t, 177, 1);
     i(&mut t, 290, i64::from(text.is_some()));

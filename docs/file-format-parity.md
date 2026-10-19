@@ -58,6 +58,11 @@ definition uses (leftovers of DGN imports, hundreds of thousands in some drawing
 on read with a note, so such files no longer exceed the DXF limit (#1482). **DWG ≈ 30% read,
 ≈ 15% write.**
 
+What a read leaves out is reported rather than silent: DXF records the reader could not place are
+counted per section (`skipped`), and a DWG — which has no sections of its own, the failsafe
+converter does the dropping — reports its losses in the reader's notes (`readNotes`). Both
+`drawing.inspect` and `cadcraft-cli info` / `convert` report them.
+
 ## DXF, version by version
 
 | DXF version | AutoCAD 2027 | CADCraft read | CADCraft write |
@@ -79,6 +84,7 @@ on read with a note, so such files no longer exceed the DXF limit (#1482). **DWG
 | DIMENSION (all 7 kinds) | yes | yes, with anonymous `*D` blocks | a reopened dimension's `*D` block is regenerated under its name, unreferenced ones dropped (#495); DIMASSOC objects written |
 | LEADER | yes | yes | |
 | MULTILEADER | yes (#459) | yes, native MULTILEADER with MLEADERSTYLE (#459) | several landings per multileader are folded into one; per-object overrides and annotative scale contexts not kept |
+| Annotative objects (`ACDB_ANNOTATIONSCALES` context data) | yes (#1321): each object's supported scales and their SCALE records, so an MTEXT, dimension, multileader, hatch or block reference draws at the viewport's scale the size AutoCAD draws it | no: object annotativity is written as CADCraft data (our own `CADCRAFT ANNOTATION` record), which AutoCAD ignores, so a CADCraft-saved file reloads those objects as not annotative. Annotative *styles* do carry the `AcadAnnotative` xdata AutoCAD reads | |
 | HATCH pattern / solid | yes | yes; associative hatches keep their boundary objects in blocks too, and the boundary carries the hatch reactor (stretched dynamic blocks drag the fill in AutoCAD) | |
 | HATCH gradient | yes | yes (#162, fixes #80) | |
 | SOLID, TRACE, 3DFACE | yes | yes | |
@@ -138,6 +144,7 @@ our output in AutoCAD black-box.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | Annotative objects: AutoCAD's `ACDB_ANNOTATIONSCALES` context data read (object → extension dictionary → context data → SCALE), so MTEXT, dimensions, multileaders, hatches and block references draw at a layout viewport's scale the size AutoCAD draws them; writing that data is still open (#1321) |
 | 2026-10-17 | minor | DWG read: DGN line style components no line style definition reaches are left out before the DXF bridge, with a read note; an 83 MB site plan with 888,483 of them (1.2 GB of DXF, over the limit) now opens (#1482) |
 | 2026-10-12 | minor | PDF output: object transparency plotted as PDF alpha (`/ExtGState` `/ca` `/CA`) when the page setup's or the plot's "Plot transparency" is on; PNG plots blend it, SVG uses `opacity`; plots without it are unchanged byte for byte |
 | 2026-10-12 | minor | DXF/DWG save: the Model layout's plot settings are written as CADCraft plots model space, drawing extents scaled to fit (PLOTSETTINGS 74 = 1, 75 = 0), instead of plot type 5 "Layout information", which other programs' Plot dialogs can't use for model space |

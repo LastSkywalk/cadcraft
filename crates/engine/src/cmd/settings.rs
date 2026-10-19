@@ -15,6 +15,15 @@ fn toggle(s: &mut Session, p: &Value, get: fn(&mut crate::Settings) -> &mut bool
     Ok(json!({ "on": on, "message": format!("<{name} {}>", if on { "on" } else { "off" }) }))
 }
 
+/// LWDISPLAY is saved in the drawing (as in AutoCAD), so the toggle writes the header the canvas
+/// reads it from.
+fn run_lwdisplay(s: &mut Session, p: &Value) -> Result<Value> {
+    let on = p.get("on").and_then(Value::as_bool).unwrap_or(!s.drafting_settings().lwdisplay);
+    s.doc_mut()?.header.set_i64("LWDISPLAY", i64::from(on));
+    s.touch();
+    Ok(json!({ "on": on, "message": format!("<Lineweight {}>", if on { "on" } else { "off" }) }))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("ortho", "Ortho Mode", |s, p| toggle(s, p, |st| &mut st.orthomode, "Ortho"))
@@ -53,11 +62,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .enabled(always)
             .noundo()
             .transparent(),
-        CommandSpec::new("lwdisplay", "Show/Hide Lineweight", |s, p| toggle(s, p, |st| &mut st.lwdisplay, "Lineweight"))
-            .params("{on?: bool}")
-            .enabled(always)
-            .noundo()
-            .transparent(),
+        CommandSpec::new("lwdisplay", "Show/Hide Lineweight", run_lwdisplay).params("{on?: bool}").enabled(always).noundo().transparent(),
         CommandSpec::new("isodraft", "Isometric Drafting", iso::run_isodraft)
             .params("{on?: bool, plane?: \"left\"|\"top\"|\"right\"|\"orthographic\"} (neither: toggle)")
             .enabled(always)

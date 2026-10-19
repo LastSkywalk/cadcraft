@@ -33,7 +33,7 @@ use pen::Pen;
 pub use dim::{ArrowGeom, Arrowhead, DimGeometry, DimText, LineRole, arrowhead, dimension_geometry, dimension_geometry_with, format_linear_value};
 pub use fill::triangulate_evenodd;
 pub use hatch::{fill_loops as hatch_fill_loops, pattern_swatch};
-pub use paper::{PAPER_SIZES, PaperSize, Sheet, paper_size, sheet};
+pub use paper::{MAX_PLOT_OFFSET_MM, PAPER_SIZES, PaperSize, Sheet, paper_size, sheet};
 pub use tolerance::{gdt_points, tolerance_in};
 
 /// Handle carried by model-space geometry drawn inside a paper-space viewport (it belongs to no
@@ -286,6 +286,9 @@ struct Ctx<'a> {
     block_pstyle: Option<usize>,
     /// Transparency (percent) of the block reference being expanded, for `ByBlock`.
     block_transparency: u8,
+    /// Drawing a dimension's block: its points are definition points, drawn as dots whatever
+    /// PDMODE says.
+    dim_block: bool,
 }
 
 impl Ctx<'_> {
@@ -510,6 +513,7 @@ fn top_ctx<'a>(d: &'a Drawing, xf: Mat3, top: Handle, frozen: &'a [String], vp_c
         lt_factor: 1.0,
         block_pstyle: None,
         block_transparency: 0,
+        dim_block: false,
     }
 }
 
@@ -1114,14 +1118,14 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             if !b.opts.text {
                 return;
             }
-            mtext(b, ctx, t, rgb, lw);
+            mtext(b, ctx, t, rgb, lw, &e.common.layer);
         }
         EntityKind::Insert(ins) => insert(b, ctx, e, ins, rgb),
         EntityKind::Dimension(dm) => {
             if let Some(blk) = dm.block.as_ref().and_then(|n| ctx.d.block(n))
                 && ctx.depth < cadcraft_doc::MAX_BLOCK_DEPTH
             {
-                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, Mat3::IDENTITY) };
+                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, dim_block: true, ..sub_ctx(ctx, e, Mat3::IDENTITY) };
                 for be in blk.entities.iter() {
                     if !b.expand() {
                         break;
@@ -1166,6 +1170,10 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
                         if hairline {
                             let pl = Polyline { vertices: p.vertices.clone(), closed: p.closed };
                             b.hairline(ctx, rgb, &pl.tessellate(tol));
+                        } else {
+                            for pts in fill::thin_segments(p, tol) {
+                                b.polyline(ctx, rgb, lw, &pts);
+                            }
                         }
                     }
                 }
@@ -1257,8 +1265,26 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             if let Some(t) = &m.text {
                 let land = m.landing.xy();
                 let dir = if t.insert.x >= land.x { 1.0 } else { -1.0 };
-                b.polyline(ctx, rgb, lw, &[land, land + Vec2::new(m.dogleg * dir, 0.0)]);
-                mtext(b, ctx, t, rgb, lw);
+                let l = mtext(b, ctx, t, rgb, lw, &e.common.layer);
+                // The landing line: the dogleg, or — for text attached at the bottom of its top
+                // line — the shelf under the whole text, as AutoCAD draws a section mark.
+                let end = if m.shelf {
+                    let x = if land.x < l.bounds.min.x {
+                        l.bounds.max.x
+                    } else if land.x > l.bounds.max.x {
+                        l.bounds.min.x
+                    } else if dir > 0.0 {
+                        l.bounds.max.x
+                    } else {
+                        l.bounds.min.x
+                    };
+                    x.is_finite().then_some(x)
+                } else {
+                    Some(land.x + m.dogleg * dir)
+                };
+                if let Some(end) = end {
+                    b.polyline(ctx, rgb, lw, &[land, Vec2::new(end, land.y)]);
+                }
             }
             if let Some(ins) = &m.block {
                 if m.dogleg > 0.0 && !m.leaders.is_empty() {
@@ -1269,6 +1295,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
                 insert(b, ctx, e, ins, rgb);
             }
         }
+        EntityKind::Point(p) if ctx.dim_block => b.point(ctx, rgb, p.p.xy()),
         EntityKind::Point(p) => {
             // Relative sizes follow the view: undo the block / viewport scale.
             let view = b.opts.view_height / ctx.xf.scale_factor().max(1e-12);
@@ -1363,8 +1390,11 @@ pub fn layout_mtext_entity(d: &Drawing, t: &cadcraft_doc::MText) -> cadcraft_fon
     cadcraft_fonts::layout_mtext_with(&t.contents, &params)
 }
 
-fn mtext_color(c: Option<cadcraft_fonts::MTextColor>, rgb: Ink) -> Ink {
+fn mtext_color(ctx: &Ctx, c: Option<cadcraft_fonts::MTextColor>, rgb: Ink, layer: &str) -> Ink {
+    let layer = if layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { layer };
     match c {
+        Some(cadcraft_fonts::MTextColor::ByLayer) => ink(Color::ByLayer, ctx.layer_color(layer).unwrap_or(Color::Index(7)), ctx.block_color),
+        Some(cadcraft_fonts::MTextColor::ByBlock) => ink(Color::ByBlock, Color::Index(7), ctx.block_color),
         Some(cadcraft_fonts::MTextColor::Aci(i)) => {
             u8::try_from(i).ok().filter(|i| *i > 0).map(|i| ink(Color::Index(i), Color::Index(7), Color::Index(7))).unwrap_or(rgb)
         }
@@ -1375,11 +1405,14 @@ fn mtext_color(c: Option<cadcraft_fonts::MTextColor>, rgb: Ink) -> Ink {
     }
 }
 
-fn mtext(b: &mut Builder, ctx: &Ctx, t: &cadcraft_doc::MText, rgb: Ink, lw: f32) {
+/// Multiline text of an object on `layer`, whose own colour is `rgb`. Returns what it laid out,
+/// for callers that draw around the text (a multileader's shelf).
+fn mtext(b: &mut Builder, ctx: &Ctx, t: &cadcraft_doc::MText, rgb: Ink, lw: f32, layer: &str) -> cadcraft_fonts::MTextLayout {
     let l = layout_mtext_entity(ctx.d, t);
     for p in &l.pieces {
-        b.shaped(ctx, mtext_color(p.color, rgb), lw, &p.shaped);
+        b.shaped(ctx, mtext_color(ctx, p.color, rgb, layer), lw, &p.shaped);
     }
+    l
 }
 
 /// The font settings of a dimension style's text style.
@@ -1532,6 +1565,7 @@ fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3) -> Ctx<'a> {
         block_pstyle: ctx.block_pstyle,
         // The reference's own, set by the caller (`Builder::transparency` while it draws).
         block_transparency: ctx.block_transparency,
+        dim_block: false,
     }
 }
 
@@ -1592,7 +1626,9 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
                 b.transparency = t;
                 let lw = if b.opts.lineweights { lw } else { 0.0 };
                 match (&multiline, &sh) {
-                    (Some(m), _) => mtext(b, ctx, m, ink, lw),
+                    (Some(m), _) => {
+                        mtext(b, ctx, m, ink, lw, &e.common.layer);
+                    }
                     (None, Some(sh)) => b.shaped(ctx, ink, lw, sh),
                     (None, None) => {}
                 }

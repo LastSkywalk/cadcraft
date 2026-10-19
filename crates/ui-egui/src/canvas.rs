@@ -301,7 +301,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         }
         s.finish()
     };
-    let (lwdisplay, transparency_display) = (app.session.settings.lwdisplay, app.session.settings.transparency_display);
+    let (lwdisplay, transparency_display) = (app.session.drafting_settings().lwdisplay, app.session.settings.transparency_display);
     let key: ListKey = (st.uid, st.revision, band(px), lod_band, lwdisplay, transparency_display, std::sync::Arc::as_ptr(&st.doc) as usize, vp_view);
     // A background build that finished: use it unless the drawing has changed since it started
     // (or the list was dropped to force a rebuild).
@@ -457,7 +457,7 @@ struct VpFrame {
 
 /// Build or reuse the active viewport's [`VpContent`] for this frame.
 fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Option<VpFrame> {
-    let (lwdisplay, transparency) = (app.session.settings.lwdisplay, app.session.settings.transparency_display);
+    let (lwdisplay, transparency) = (app.session.drafting_settings().lwdisplay, app.session.settings.transparency_display);
     let stencil = stencil_clip(app);
     let c = &mut app.canvas.vp;
     let Some((st, (h, vp, clip))) = app.session.state().ok().and_then(|st| Some((st, split_viewport(st, stencil)?))) else {
@@ -1770,8 +1770,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         Some(sh) => {
             // Paper space: grey surround, the sheet with a shadow, the printable area dashed.
             painter.rect_filled(rect, 0.0, Color32::from_rgb(0x50, 0x57, 0x63));
-            let a = xf_paper.to_screen(Vec2::new(0.0, sh.size.y));
-            let b = xf_paper.to_screen(Vec2::new(sh.size.x, 0.0));
+            let sb = sh.bounds();
+            let a = xf_paper.to_screen(Vec2::new(sb.min.x, sb.max.y));
+            let b = xf_paper.to_screen(Vec2::new(sb.max.x, sb.min.y));
             let paper = Rect::from_two_pos(a, b);
             painter.rect_filled(paper.translate(vec2(5.0, 5.0)), 0.0, Color32::from_black_alpha(110));
             painter.rect_filled(paper, 0.0, t.paper);

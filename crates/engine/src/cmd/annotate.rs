@@ -454,6 +454,7 @@ fn mleader_kind(s: &Session, pts: &[Vec2], text: &str, landing: bool) -> Option<
         arrow_size: st.arrow_size * k,
         spline: false,
         block: None,
+        shelf: false,
     }))
 }
 

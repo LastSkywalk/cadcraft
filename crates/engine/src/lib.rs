@@ -810,6 +810,8 @@ impl Session {
         if let Ok(d) = self.doc() {
             settings.snapunit = d.header.snap_unit();
             settings.gridunit = d.header.grid_unit();
+            // LWDISPLAY is saved in the drawing: a file drawn with lineweights on shows them on.
+            settings.lwdisplay = d.header.i64("LWDISPLAY", 0) != 0;
         }
         settings
     }
@@ -857,7 +859,7 @@ impl Session {
     }
 
     /// Add an entity to the current space with current properties.
-    pub fn add_entity(&mut self, kind: EntityKind) -> Result<Handle> {
+    pub fn add_entity(&mut self, mut kind: EntityKind) -> Result<Handle> {
         let common = self.current_common();
         let space = self.space();
         let true_color = self.doc()?.header.get("CECOLOR_RGB").and_then(|v| v.as_i64());
@@ -866,10 +868,15 @@ impl Session {
             common.color = cadcraft_color::Color::True(cadcraft_color::Rgb::from_u32(rgb as u32));
         }
         // Text, dimensions, multileaders, hatches and block references of annotative styles are
-        // annotative, supporting the current annotation scale.
+        // annotative, made at the current annotation scale: an annotative object is stored the
+        // size it shows at the scale it was made at, as AutoCAD stores it.
         let d = self.doc()?;
         if d.annotative_by_style(&kind) {
-            common.anno_scales = vec![d.current_anno_scale()];
+            let scale = d.current_anno_scale();
+            let mut e = cadcraft_doc::Entity { handle: cadcraft_doc::Handle(0), common, kind };
+            cadcraft_doc::made_annotative_at(&mut e, &scale);
+            common = e.common;
+            kind = e.kind;
         }
         let h = self.doc_mut()?.add(&space, common, kind)?;
         Ok(h)

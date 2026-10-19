@@ -453,6 +453,8 @@ impl Formatted {
         match f.color {
             Some(MTextColor::Aci(v)) => s.push_str(&format!("\\C{v};")),
             Some(MTextColor::Rgb(v)) => s.push_str(&format!("\\c{v};")),
+            Some(MTextColor::ByLayer) => s.push_str("\\C256;"),
+            Some(MTextColor::ByBlock) => s.push_str("\\C0;"),
             None => {}
         }
         s

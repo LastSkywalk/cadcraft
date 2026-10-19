@@ -74,7 +74,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("pagesetup", "Page Setup Manager...", run_pagesetup)
             .menu(&["File", "Page Setup Manager..."])
             .params(
-                "{layout?: current, device?: plotter name (PLOTTERMANAGER) | \"None\", paper?: the device's paper | \"A4\"|\"A3\"|\"Letter\"|\"ANSI B\"|…, width?, height? (mm), landscape?, margins?: [l,b,r,t] mm, lineweights?, plotArea?, scale?, scaleToFit?, center?, plotStyleTable?: \"monochrome.ctb\"|\"grayscale.ctb\"|\"default.ctb\"|\"None\"|…, displayPlotStyles?: bool, plotTransparency?: bool}",
+                "{layout?: current, device?: plotter name (PLOTTERMANAGER) | \"None\", paper?: the device's paper | \"A4\"|\"A3\"|\"Letter\"|\"ANSI B\"|…, width?, height? (mm), landscape?, margins?: [l,b,r,t] mm, plotOrigin?: [x,y] mm from the printable area's corner, lineweights?, plotArea?, scale?, scaleToFit?, center?, plotStyleTable?: \"monochrome.ctb\"|\"grayscale.ctb\"|\"default.ctb\"|\"None\"|…, displayPlotStyles?: bool, plotTransparency?: bool}",
             ),
         CommandSpec::new("plot", "Print...", |s, p| run_plot(s, &super::plotters::plot_options(s, p, "plot")?, "plot"))
             .menu(&["File", "Print..."])
@@ -629,6 +629,7 @@ fn run_pagesetup(s: &mut Session, p: &Value) -> Result<Value> {
         "height",
         "landscape",
         "margins",
+        "plotOrigin",
         "lineweights",
         "plotArea",
         "scale",
@@ -687,6 +688,13 @@ fn run_pagesetup(s: &mut Session, p: &Value) -> Result<Value> {
         match a[..] {
             [l, b, r, t] if a.iter().all(|v| v.is_finite() && (0.0..=1000.0).contains(v)) => page.margins_mm = [l, b, r, t],
             _ => return Err(bad(cmd, "`margins` must be [left, bottom, right, top] in mm")),
+        }
+    }
+    if let Some(o) = p.get("plotOrigin") {
+        let a: Vec<f64> = o.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+        match a[..] {
+            [x, y] if a.iter().all(|v| v.is_finite() && v.abs() <= cadcraft_render::MAX_PLOT_OFFSET_MM) => page.plot_origin_mm = [x, y],
+            _ => return Err(bad(cmd, "`plotOrigin` must be [x, y] in mm from the printable area's corner")),
         }
     }
     if let Some(v) = p.get("lineweights").and_then(Value::as_bool) {

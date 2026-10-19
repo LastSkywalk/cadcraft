@@ -83,11 +83,14 @@ fn page_setup_takes_a_device_and_its_papers() {
     assert_eq!(r["page"]["paper"], "Strip");
     let page = &s.doc().unwrap().layout("Layout1").unwrap().page;
     assert_eq!((page.width_mm, page.height_mm, page.margins_mm), (200.0, 600.0, [10.0, 20.0, 10.0, 20.0]));
-    // The printable area shown in the layout follows the device paper.
+    // The printable area shown in the layout follows the device paper. Paper space (0,0) is its
+    // lower-left corner, as it is in AutoCAD, so the paper rectangle reaches 10/20 mm below and
+    // left of it and the printable area ends 10/20 mm short of the paper's top right.
     let sheet = cadcraft_render::sheet(s.doc().unwrap(), "Layout1").unwrap();
     let mm = |v: f64| v * sheet.unit_mm;
-    let got = [mm(sheet.printable.min.x), mm(sheet.printable.min.y), mm(sheet.printable.max.x), mm(sheet.printable.max.y)];
-    assert!(got.iter().zip([10.0, 20.0, 190.0, 580.0]).all(|(a, b)| (a - b).abs() < 1e-9), "{got:?}");
+    let got = |b: cadcraft_geom::Bounds2| [mm(b.min.x), mm(b.min.y), mm(b.max.x), mm(b.max.y)];
+    assert!(got(sheet.bounds()).iter().zip([-10.0, -20.0, 190.0, 580.0]).all(|(a, b)| (a - b).abs() < 1e-9), "{:?}", got(sheet.bounds()));
+    assert!(got(sheet.printable).iter().zip([0.0, 0.0, 180.0, 560.0]).all(|(a, b)| (a - b).abs() < 1e-9), "{:?}", got(sheet.printable));
 
     // Switching to a built-in device keeps a paper it has, else takes its default (A4).
     s.execute("pagesetup", &json!({"layout": "Layout1", "device": "CADCraft PDF"})).unwrap();

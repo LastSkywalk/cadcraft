@@ -97,6 +97,12 @@ In the file name, characters other than letters, digits, spaces and `-_()+,` bec
   margins become the layout's printable area. Without `paper`, a device change keeps the
   current paper if the device has it, else takes the device's default paper. A device change
   also takes the device's orientation unless `landscape` is given. `device: "None"` clears it.
+- `pagesetup {layout, margins: [l, b, r, t], plotOrigin: [x, y]}` edits those directly, both in
+  millimetres from the printable area's lower-left corner (PLOTSETTINGS 40–43 and 46/47).
+  Paper space (0,0) *is* that corner, as it is in AutoCAD: a viewport fitted to the sheet runs
+  from (0,0) to the printable size, and the paper rectangle reaches `margins + plot origin`
+  below and left of it. The page setup's plot origin therefore places a 1:1 layout plot on the
+  paper, and moves the sheet drawn in the layout.
 - `plot {device?, paper?, …}` plots with `device`, or with the layout's page setup device.
   - The device sets the output and resolution.
   - `paper` (one of the device's papers) sets the size and margins for this plot.

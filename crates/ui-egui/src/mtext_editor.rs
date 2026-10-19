@@ -51,6 +51,7 @@ fn color32(c: MTextColor) -> Color32 {
     let rgb = match c {
         MTextColor::Aci(v) => cadcraft_color::aci_rgb(u8::try_from(v).unwrap_or(7)),
         MTextColor::Rgb(v) => cadcraft_color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8),
+        MTextColor::ByLayer | MTextColor::ByBlock => cadcraft_color::aci_rgb(7),
     };
     Color32::from_rgb(rgb.0, rgb.1, rgb.2)
 }

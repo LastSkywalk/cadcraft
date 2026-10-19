@@ -229,13 +229,22 @@ fn explode_gives_plain_objects_at_the_current_scale() {
     s.execute("block", &json!({ "name": "TAG", "base": [0, 0], "handles": [h.hex()], "annotative": true })).unwrap();
     let ins = s.doc().unwrap().model.last().unwrap().handle;
     assert_eq!(scales(&s, ins), ["1:10"]);
+    // A reference to an annotative block is made at the annotation scale: the block's text,
+    // 0.25 on paper, is stored at 1:10 as 2.5 and draws that size at 1:10 (issue #1321).
+    let d = s.doc().unwrap();
+    let ins_scale = match &d.entity(ins).unwrap().kind {
+        EntityKind::Insert(i) => i.scale.x,
+        k => panic!("{k:?}"),
+    };
+    assert!((ins_scale - 10.0).abs() < 1e-9, "{ins_scale}");
+    assert_eq!(drawn_height(d, ins), Some(2.5));
     s.execute("explode", &json!({ "handles": [ins.hex()] })).unwrap();
     let d = s.doc().unwrap();
     let t = d.model.iter().find(|e| matches!(e.kind, EntityKind::Text(_))).unwrap();
-    match &t.kind {
-        EntityKind::Text(t) => assert!((t.height - 2.5).abs() < 1e-9, "{}", t.height),
-        _ => unreachable!(),
-    }
+    // The exploded text is a plain object the size the reference drew at 1:10: 0.25 on paper at
+    // the reference's 1:10 is 2.5, and it no longer scales with the view.
+    assert!(scales(&s, t.handle).is_empty(), "{:?}", scales(&s, t.handle));
+    assert_eq!(drawn_height(d, t.handle), Some(2.5));
 }
 
 #[test]
@@ -286,8 +295,9 @@ fn hostile_parameters_are_refused() {
 
 #[test]
 fn annotative_mtext_columns_follow_the_scale() {
-    // #708: at 1:2, two columns 10 wide with a gutter of 1 and a height of 20 on paper draw 20
-    // wide, 2 apart and 40 tall: the box is 42 × 40, not 41 × 20.
+    // #708: two columns 10 wide with a gutter of 1 and a height of 20. Marking the object
+    // annotative at 1:2 makes that geometry its own 1:2 geometry, so it draws as stored inside the
+    // box 21 × 20 and every size (box, gutter, column heights) follows the scale from there.
     let mut s = Session::new();
     setvar(&mut s, "CANNOSCALE", json!("1:2"));
     let r = s
@@ -300,8 +310,8 @@ fn annotative_mtext_columns_follow_the_scale() {
     s.execute("properties.set", &json!({ "handles": [h.hex()], "annotative": true })).unwrap();
     assert_eq!(scales(&s, h), ["1:2"]);
     let v = |s: &mut Session, name: &str| s.execute("getvar", &json!({ "name": name })).unwrap()["value"].clone();
-    assert_eq!(v(&mut s, "EXTMIN"), json!([0.0, -40.0, 0.0]));
-    assert_eq!(v(&mut s, "EXTMAX"), json!([42.0, 0.0, 0.0]));
+    assert_eq!(v(&mut s, "EXTMIN"), json!([0.0, -20.0, 0.0]));
+    assert_eq!(v(&mut s, "EXTMAX"), json!([21.0, 0.0, 0.0]));
     // Dynamic columns with manual heights, and the text of a multileader, scale the same way.
     let mut e = entity(&s, h);
     if let EntityKind::MText(t) = &mut e.kind
@@ -323,6 +333,7 @@ fn annotative_mtext_columns_follow_the_scale() {
             arrow_size: 1.0,
             spline: false,
             block: None,
+            shelf: false,
         }),
         ..e.clone()
     };

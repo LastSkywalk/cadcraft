@@ -264,7 +264,9 @@ fn run_block(s: &mut Session, p: &Value) -> Result<Value> {
             Arc::make_mut(b).annotative = true;
         }
         if let Some(h) = r {
-            d.modify_entity(h, |e| cadcraft_doc::set_annotative(e, true, &cur))?;
+            // The reference is annotative from now on, made at the current annotation scale, so
+            // its paper size is stored at that scale as `Session::add_entity` stores one.
+            d.modify_entity(h, |e| cadcraft_doc::made_annotative_at(e, &cur))?;
         }
     }
     Ok(json!({ "block": name, "insert": r.map(|h| h.hex()) }))
