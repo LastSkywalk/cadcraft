@@ -119,6 +119,31 @@ fn clicking_the_width_grip_and_a_new_point_updates_the_attribute_field() {
 }
 
 #[test]
+fn a_quick_click_on_the_grip_after_selecting_is_a_grip_edit_not_a_double_click() {
+    let mut h = harness();
+    // A click on the reference (its attribute text) selects it; a click on its Width grip right
+    // after (within the double-click time, elsewhere) makes the grip hot, as in AutoCAD.
+    let at = screen(&h, Vec2::new(101.0, 50.5));
+    h.event(Event::PointerMoved(at));
+    h.run_steps(2);
+    button(&mut h, at, true);
+    button(&mut h, at, false);
+    assert_eq!(h.state().session.selection(), vec![REF]);
+    let g = dynblock::grips(h.state().session.doc().unwrap(), REF).into_iter().find(|g| g.node == 2 && g.part == GripPart::End).unwrap();
+    let (from, to) = (screen(&h, g.at), screen(&h, g.at - Vec2::new(6.0, 0.0)));
+    button(&mut h, from, true);
+    button(&mut h, from, false);
+    assert!(h.state().ui.dialog.is_none(), "no double-click action: {:?}", h.state().ui.dialog);
+    assert_eq!(h.state().session.running.as_ref().map(|r| r.id.clone()).as_deref(), Some("grip"));
+    for i in 1..=6 {
+        h.event(Event::PointerMoved(from + (to - from) * (i as f32 / 6.0)));
+        h.run_steps(1);
+    }
+    click(&mut h, to);
+    assert_eq!(width_text(&h), "W=30", "log: {:?}", h.state().session.log);
+}
+
+#[test]
 fn update_fields_from_the_command_line() {
     let mut h = harness();
     // A field that was saved with a stale value shows the current one after UPDATEFIELD.

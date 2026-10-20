@@ -47,6 +47,9 @@ fn same_content(a: &ListKey, b: &ListKey) -> bool {
 #[derive(Default)]
 pub struct CanvasState {
     pub list: Option<DisplayList>,
+    /// Where the last click on the canvas was: two quick clicks are a double-click only near
+    /// each other, as in AutoCAD (a click selecting a block, then one on its grip, is not).
+    last_click: Option<egui::Pos2>,
     key: ListKey,
     /// The area `list` was built for (hatch patterns exist only inside it); a view leaving it
     /// rebuilds the list.
@@ -396,6 +399,8 @@ fn stencil_clip(app: &CadApp) -> bool {
 /// How long the view inside the active viewport stays still before a zoomed [`VpContent`] is
 /// rebuilt at the exact view (dash lengths and curve detail follow the viewport's scale).
 const VP_SETTLE_MS: f64 = 150.0;
+/// Farthest apart (points) the two clicks of a double-click are.
+const DOUBLE_CLICK_DISTANCE: f32 = 6.0;
 
 /// Model space seen through the active MSPACE viewport, drawn apart from the layout's list. It is
 /// built for an area around the viewport at one view and drawn clipped to the viewport, moved
@@ -1369,7 +1374,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     app.canvas.xf = Some(xf);
 
     // ---------- input ----------
-    let (hover_pos, scroll, mods, middle_down, pressed_primary, pressed_secondary, dbl_middle, dbl_primary) = ui.input(|i| {
+    let (hover_pos, scroll, mods, middle_down, pressed_primary, pressed_secondary, dbl_middle, dbl_primary, click_pos) = ui.input(|i| {
         (
             i.pointer.hover_pos(),
             i.smooth_scroll_delta,
@@ -1379,8 +1384,14 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             i.pointer.secondary_clicked(),
             i.pointer.button_double_clicked(egui::PointerButton::Middle),
             i.pointer.button_double_clicked(egui::PointerButton::Primary),
+            i.pointer.interact_pos(),
         )
     });
+    // egui counts any two quick clicks as a double-click; AutoCAD only two in about one place.
+    let dbl_primary = dbl_primary && app.canvas.last_click.zip(click_pos).is_some_and(|(a, b)| a.distance(b) <= DOUBLE_CLICK_DISTANCE);
+    if pressed_primary {
+        app.canvas.last_click = click_pos;
+    }
     let inside = hover_pos.is_some_and(|p| rect.contains(p)) && resp.hovered();
     // Whether Ctrl is held right now. Written every frame (not just while a command prompts), so
     // previews that read `Session::ctrl_down` always see the current state. The engine
