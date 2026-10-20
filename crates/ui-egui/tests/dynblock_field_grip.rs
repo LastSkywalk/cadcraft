@@ -62,6 +62,19 @@ fn button(h: &mut Harness<'_, CadApp>, p: Pos2, pressed: bool) {
     h.run_steps(1);
 }
 
+/// Press at `a`, move to `b` in steps, let go at `b`.
+fn drag(h: &mut Harness<'_, CadApp>, a: Pos2, b: Pos2) {
+    h.event(Event::PointerMoved(a));
+    h.run_steps(2);
+    button(h, a, true);
+    for i in 1..=8 {
+        h.event(Event::PointerMoved(a + (b - a) * (i as f32 / 8.0)));
+        h.run_steps(1);
+    }
+    button(h, b, false);
+    h.run_steps(3);
+}
+
 fn click(h: &mut Harness<'_, CadApp>, p: Pos2) {
     button(h, p, true);
     button(h, p, false);
@@ -76,7 +89,7 @@ fn width_text(h: &Harness<'_, CadApp>) -> String {
 }
 
 #[test]
-fn dragging_the_width_grip_updates_the_attribute_field() {
+fn clicking_the_width_grip_and_a_new_point_updates_the_attribute_field() {
     let mut h = harness();
     assert_eq!(width_text(&h), "W=36");
     h.state_mut().session.set_selection(vec![REF]);
@@ -126,4 +139,26 @@ fn update_fields_from_the_command_line() {
         h.run_steps(3);
     }
     assert_eq!(width_text(&h), "W=36", "log: {:?}", h.state().session.log);
+}
+
+#[test]
+fn pressing_and_dragging_a_grip_edits_it_too() {
+    let mut h = harness();
+    h.state_mut().session.set_selection(vec![REF]);
+    h.run_steps(3);
+    let g = dynblock::grips(h.state().session.doc().unwrap(), REF).into_iter().find(|g| g.node == 2 && g.part == GripPart::End).unwrap();
+    let (from, to) = (screen(&h, g.at), screen(&h, g.at - Vec2::new(6.0, 0.0)));
+    drag(&mut h, from, to);
+    assert_eq!(width_text(&h), "W=30", "log: {:?}", h.state().session.log);
+    assert!(h.state().session.running.is_none(), "the drag finished the edit");
+
+    // An ordinary grip: a line's end dragged to a new point.
+    let line = h.state_mut().session.execute("line", &json!({"points": [[100, 30], [120, 30]]})).unwrap();
+    let line = Handle::parse_hex(line["handles"][0].as_str().unwrap()).unwrap();
+    h.state_mut().session.set_selection(vec![line]);
+    h.run_steps(3);
+    let (from, to) = (screen(&h, Vec2::new(120.0, 30.0)), screen(&h, Vec2::new(125.0, 35.0)));
+    drag(&mut h, from, to);
+    let EntityKind::Line(l) = &h.state().session.doc().unwrap().entity(line).unwrap().kind else { panic!() };
+    assert!((l.b.x - 125.0).abs() < 0.5 && (l.b.y - 35.0).abs() < 0.5, "{l:?} log: {:?}", h.state().session.log);
 }

@@ -46,6 +46,11 @@ fn mb(n: u64) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+mod assoc_dep;
+#[cfg(not(target_arch = "wasm32"))]
+mod props_table;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::io::{Cursor, Write};
     use std::panic::AssertUnwindSafe;
@@ -83,12 +88,26 @@ mod native {
             let why = outcome.stats.diagnostics.first().map(|d| d.message.trim_start_matches("Failsafe: ").to_string());
             return Err(format!("DWG: {}", why.unwrap_or_else(|| "the file's objects couldn't be read".to_string())));
         }
-        let mut notes = read_notes(&outcome.stats);
         let mut doc = outcome.document;
+        // Records the reader skipped that CADCraft reads itself (associative geometry
+        // dependencies), and what it misreads of the associative networks constraint-driven
+        // dynamic blocks have (#1321); the note counts only what is still missing.
+        let raw = std::panic::catch_unwind(|| crate::assoc_dep::Raw::load(bytes, &doc)).ok().flatten();
+        let (recovered, node_counts) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::assoc_dep::name_edges(&mut doc);
+            raw.as_ref().map_or_else(Default::default, |raw| {
+                (crate::assoc_dep::recover(raw, &outcome.stats, &mut doc), crate::assoc_dep::node_counts(raw, &doc))
+            })
+        }))
+        .unwrap_or_default();
+        drop(raw);
+        let mut notes = read_notes(&outcome.stats, &recovered);
         current_style_names(&mut doc);
         table_merges(&mut doc);
         table_style_rows(&mut doc, false);
         dimension_flags(&mut doc, false);
+        // Dynamic blocks' properties tables, kept by the reader as raw record bytes.
+        crate::props_table::decode_all(&mut doc);
         let orphans = drop_orphaned_dgn_components(&mut doc);
         if orphans > 0 {
             let (s, were) = if orphans == 1 { ("", "was") } else { ("s", "were") };
@@ -106,7 +125,12 @@ mod native {
             ));
         }
         written.map_err(|e| format!("DWG→DXF: {e}"))?;
-        Ok((add_header_vars(out.buf, &doc.header), notes))
+        let buf = std::mem::take(&mut out.buf);
+        let buf = match std::panic::catch_unwind(AssertUnwindSafe(|| crate::assoc_dep::patch_node_counts(buf, &node_counts))) {
+            Ok((buf, _)) => buf,
+            Err(_) => return Err("the DWG→DXF conversion failed on this file".to_string()),
+        };
+        Ok((add_header_vars(buf, &doc.header), notes))
     }
 
     /// Most record types named in the skipped-records note.
@@ -114,8 +138,8 @@ mod native {
 
     /// The note on object records a failsafe read skipped: how many, and how many of each type
     /// (most first), or nothing when the read was complete.
-    pub(crate) fn read_notes(stats: &acadrust::ReadStats) -> Vec<String> {
-        let skipped = stats.skipped_source_records;
+    pub(crate) fn read_notes(stats: &acadrust::ReadStats, recovered: &std::collections::HashSet<u64>) -> Vec<String> {
+        let skipped = stats.skipped_source_records.saturating_sub(recovered.len());
         if skipped == 0 {
             return Vec::new();
         }
@@ -125,7 +149,7 @@ mod native {
             None => "unknown".to_string(),
         };
         let mut by_type: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-        for d in stats.diagnostics.iter().filter(|d| d.record_handle.is_some()) {
+        for d in stats.diagnostics.iter().filter(|d| d.record_handle.is_some_and(|h| !recovered.contains(&h))) {
             *by_type.entry(label(d.record_type.as_deref())).or_default() += 1;
         }
         let mut types: Vec<(String, usize)> = by_type.into_iter().collect();

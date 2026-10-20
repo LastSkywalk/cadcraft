@@ -1671,6 +1671,22 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             app.session.echo(e.to_string());
         }
     }
+    // Dragging a grip edits it: pressing on it starts the edit, and letting go places the point,
+    // as clicking it and then clicking the point does (a dynamic block's list grip opens its list
+    // on a click only).
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && !middle_down
+        && app.session.running.is_none()
+        && app.session.pending_window.is_none()
+        && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        && rect.contains(origin)
+    {
+        if let Some(g) = crate::dyngrips::at(app, &xf, Some(origin)).filter(|(_, g)| g.shape != cadcraft_engine::doc::dynblock::GripShape::List) {
+            crate::dyngrips::click(app, g);
+        } else if let Some(g) = grip_at(app, &xf, Some(origin)) {
+            click_grip(app, g, mods.shift);
+        }
+    }
     // Press-and-drag selection window (PICKDRAG = 2; click-click still works): a drag
     // that starts while objects are being selected opens a window where the button went down,
     // and letting go closes it. Drags on grips and drags while drawing are left alone.
