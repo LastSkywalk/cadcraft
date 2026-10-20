@@ -1,16 +1,15 @@
 //! Geometry dependencies of associative networks (`ACDBASSOCGEOMDEPENDENCY`) the DWG reader
 //! couldn't decode. It reads the ones whose persistent subentity is a single edge or an ACIS one,
 //! and drops the others — those naming a subentity by type and index
-//! (`AcDbAssocSimplePersSubentId`), which every constraint-driven dynamic block (VetCAD's bent
-//! bars and stirrups) has. Without them AutoCAD can't evaluate the constraint parameters of a
-//! drawing CADCraft saved, and shows `##` in the attribute fields that read them (#1321).
+//! (`AcDbAssocSimplePersSubentId`), which every constraint-driven dynamic block has. Without them AutoCAD can't evaluate the constraint
+//! parameters of a drawing CADCraft saved, and shows `##` in the attribute fields that read them
+//! (#1321).
 //!
 //! The reader reports where each skipped record is in the objects section, so they are read
 //! again from there: the record (its size, its handle stream's size, its bits), the object
 //! header, the dependency (as the reader reads it for the dependencies it decodes), the geometry
 //! dependency's version and flag, the subentity class (2: type, index and two flags), and the
-//! compound-object flag. They are written as AutoCAD writes them in DXF; checked against
-//! AutoCAD's own DXF of the drawing, every group of all 275 equal.
+//! compound-object flag. They are written as AutoCAD writes them in DXF.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,20 +17,14 @@ use acadrust::io::dwg::dwg_stream_readers::merged_reader::DwgMergedReader;
 use acadrust::objects::ObjectType;
 use acadrust::types::{DxfVersion, Handle};
 
+use crate::record::{Groups, hex};
+
 /// The class name, as classes and type codes name it.
 const CLASS: &str = "ACDBASSOCGEOMDEPENDENCY";
 /// Most records recovered from one file.
 const MAX_RECORDS: usize = 1_000_000;
-const MAX_EED: usize = 4096;
-const MAX_REACTORS: i32 = 256;
 /// The persistent subentity class this decodes (`AcDbAssocSimplePersSubentId`).
 const SIMPLE: i32 = 2;
-
-type Groups = Vec<(i32, String)>;
-
-fn hex(h: u64) -> String {
-    format!("{h:X}")
-}
 
 fn bit(b: bool) -> String {
     i32::from(b).to_string()
@@ -72,41 +65,9 @@ fn record(objects: &[u8], at: usize) -> Option<(&[u8], i64)> {
 
 /// Decode one record into (handle, owner, groups), or `None` when it isn't one this reads whole.
 pub(crate) fn decode(data: &[u8], handle_bits: i64, version: DxfVersion) -> Option<(u64, u64, Groups)> {
-    let total = i64::try_from(data.len()).ok()?.checked_mul(8)?;
-    let handles_at = total.checked_sub(handle_bits).filter(|b| *b > 0)?;
-    let mut r = DwgMergedReader::new(data.to_vec(), version, handles_at);
-    r.setup_text_and_handle(handles_at);
-    r.read_object_type();
-    let handle = r.main_mut().read_handle();
-    r.set_ref_handle(handle);
-    for _ in 0..MAX_EED {
-        let size = r.read_bit_short();
-        if size <= 0 {
-            break;
-        }
-        r.main_mut().read_handle();
-        r.read_bytes(usize::try_from(size).ok()?);
-    }
-    let owner = r.read_handle();
-    let reactors = r.read_bit_long();
-    if !(0..=MAX_REACTORS).contains(&reactors) {
-        return None;
-    }
-    let mut g: Groups = Vec::new();
-    let reactors: Vec<u64> = (0..reactors).map(|_| r.read_handle()).collect();
-    if !reactors.is_empty() {
-        g.push((102, "{ACAD_REACTORS".into()));
-        g.extend(reactors.iter().map(|h| (330, hex(*h))));
-        g.push((102, "}".into()));
-    }
-    if !r.read_bit() {
-        g.push((102, "{ACAD_XDICTIONARY".into()));
-        g.push((360, hex(r.read_handle())));
-        g.push((102, "}".into()));
-    }
-    if r.read_bit() {
-        return None;
-    }
+    let (mut r, header) = crate::record::open(data, handle_bits, version)?;
+    let (handle, owner) = (header.handle, header.owner);
+    let mut g = header.groups();
     // The dependency.
     g.push((100, "AcDbAssocDependency".into()));
     g.push((90, r.read_bit_short().to_string()));
@@ -167,38 +128,8 @@ impl Raw {
     /// positioned at the object's own data.
     fn object(&self, at: usize, handle: u64) -> Option<DwgMergedReader> {
         let (data, bits) = record(&self.objects, at)?;
-        let total = i64::try_from(data.len()).ok()?.checked_mul(8)?;
-        let handles_at = total.checked_sub(bits).filter(|b| *b > 0)?;
-        let mut r = DwgMergedReader::new(data.to_vec(), self.version, handles_at);
-        r.setup_text_and_handle(handles_at);
-        r.read_object_type();
-        if r.main_mut().read_handle() != handle {
-            return None;
-        }
-        r.set_ref_handle(handle);
-        for _ in 0..MAX_EED {
-            let size = r.read_bit_short();
-            if size <= 0 {
-                break;
-            }
-            r.main_mut().read_handle();
-            r.read_bytes(usize::try_from(size).ok()?);
-        }
-        r.read_handle();
-        let reactors = r.read_bit_long();
-        if !(0..=MAX_REACTORS).contains(&reactors) {
-            return None;
-        }
-        for _ in 0..reactors {
-            r.read_handle();
-        }
-        if !r.read_bit() {
-            r.read_handle();
-        }
-        if r.read_bit() {
-            return None;
-        }
-        Some(r)
+        let (r, header) = crate::record::open(data, bits, self.version)?;
+        (header.handle == handle).then_some(r)
     }
 }
 
@@ -371,7 +302,7 @@ pub(crate) fn patch_node_counts(dxf: Vec<u8>, counts: &HashMap<u64, i32>) -> (Ve
             continue;
         }
         let Some(count) = value(at).and_then(|v| std::str::from_utf8(v).ok()).and_then(|v| v.parse::<usize>().ok()) else { continue };
-        let target = at + 1 + count;
+        let Some(target) = count.checked_add(at + 1) else { continue };
         if code(target) != Some(b"90") || (at + 1..target).any(|k| code(k) != Some(b"360")) {
             continue;
         }
@@ -470,5 +401,14 @@ mod tests {
         let odd = constraint_group("1A", 2, "    12").replace("     2\r\n360\r\n100", "     3\r\n360\r\n100");
         assert_ne!(odd, constraint_group("1A", 2, "    12"));
         assert_eq!(patch_node_counts(odd.clone().into_bytes(), &counts), (odd.into_bytes(), 0));
+    }
+
+    #[test]
+    fn an_action_count_past_the_end_of_memory_is_left_alone() {
+        let counts: HashMap<u64, i32> = [(0x1A, 369)].into_iter().collect();
+        let dxf = constraint_group("1A", 1, "    12");
+        let huge = dxf.replace("     1\r\n360", &format!("{}\r\n360", usize::MAX));
+        assert_ne!(huge, dxf);
+        assert_eq!(patch_node_counts(huge.clone().into_bytes(), &counts), (huge.into_bytes(), 0));
     }
 }

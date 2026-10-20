@@ -65,18 +65,9 @@ impl PlotterStore {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn settings_folder() -> PlotterStore {
         fn dir() -> std::result::Result<std::path::PathBuf, String> {
-            use std::path::PathBuf;
-            let get = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-            let root = match std::env::var_os("CADCRAFT_CONFIG_DIR") {
-                Some(r) if !r.is_empty() => Some(PathBuf::from(r)),
-                Some(_) => None,
-                None => match std::env::consts::OS {
-                    "macos" => get("HOME").map(|h| h.join("Library/Application Support/CADCraft")),
-                    "windows" => get("APPDATA").map(|r| r.join("CADCraft")),
-                    _ => get("XDG_CONFIG_HOME").map(|r| r.join("cadcraft")).or_else(|| get("HOME").map(|h| h.join(".config/cadcraft"))),
-                },
-            };
-            root.map(|r| r.join("plotters")).ok_or_else(|| "there is no settings folder for plotter configurations".to_string())
+            crate::config_dir::config_dir()
+                .map(|r| r.join("plotters"))
+                .ok_or_else(|| "there is no settings folder for plotter configurations".to_string())
         }
         /// A plain file name of ours (no separators, no parent references).
         fn file(n: &str) -> std::result::Result<std::path::PathBuf, String> {

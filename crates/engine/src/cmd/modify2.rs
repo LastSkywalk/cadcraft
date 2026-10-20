@@ -2194,13 +2194,7 @@ fn in_place(s: &Session, k: &EntityKind) -> (Option<InPlace>, Option<String>) {
             let plain = cadcraft_doc::Dimension { text: String::new(), ..dm.clone() };
             let g = cadcraft_render::dimension_in(d, &plain);
             let measured = g.mtext;
-            let contents = if dm.text.is_empty() {
-                "<>".to_string()
-            } else if dm.text.trim().is_empty() {
-                String::new()
-            } else {
-                dm.text.clone()
-            };
+            let contents = cadcraft_render::override_contents(&dm.text);
             let style = d.dim_style(&dm.style).map(|st| st.text_style.clone()).unwrap_or_else(|| "Standard".into());
             let m = cadcraft_doc::MText {
                 insert: g.text_pos.to3(0.0),
@@ -2220,18 +2214,10 @@ fn in_place(s: &Session, k: &EntityKind) -> (Option<InPlace>, Option<String>) {
     }
 }
 
-/// A dimension's new text with its measurement as `<>`: as given when it has `<>` (the
-/// editor's), else (typed) the measured value in it turned back into `<>`.
+/// A dimension's new text: the measured value alone stays the measurement (`<>`); any other text
+/// is taken as given (the editor marks where the measurement goes with `<>` itself).
 fn with_measurement(text: &str, measured: &str) -> String {
-    if text.contains("<>") {
-        text.to_string()
-    } else if text == measured {
-        "<>".into()
-    } else if !measured.is_empty() && text.contains(measured) {
-        text.replacen(measured, "<>", 1)
-    } else {
-        text.to_string()
-    }
+    if text == measured { "<>".into() } else { text.to_string() }
 }
 
 pub(crate) fn set_text(s: &mut Session, h: Handle, text: &str) -> Result<()> {
@@ -2251,7 +2237,7 @@ pub(crate) fn set_text(s: &mut Session, h: Handle, text: &str) -> Result<()> {
             Some(t) => t.contents = text.replace('\n', "\\P"),
             None => return Err(other("The multileader has no text.")),
         },
-        _ => return Err(other("Select a text, mtext, attribute definition or dimension.")),
+        _ => return Err(other("Select a text, mtext, attribute definition, dimension or multileader.")),
     }
     set_kind(s, h, k)
 }
@@ -2332,7 +2318,7 @@ impl Interactive for TextEditM {
             (None, Input::Point(p)) => {
                 let h = curves::pick_at(s, p).ok_or_else(|| other("*Invalid selection*"))?;
                 let kind = curves::entity(s, h)?.kind;
-                let old = text_of(&kind).ok_or_else(|| other("Select a text, mtext, attribute definition or dimension."))?;
+                let old = text_of(&kind).ok_or_else(|| other("Select a text, mtext, attribute definition, dimension or multileader."))?;
                 (self.inplace, self.measured) = in_place(s, &kind);
                 self.h = Some((h, old));
                 Ok(Step::Continue)

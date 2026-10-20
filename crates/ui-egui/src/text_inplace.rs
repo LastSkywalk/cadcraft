@@ -32,14 +32,12 @@ fn edit_id() -> egui::Id {
 
 /// Show the box while TEXTEDIT asks for a single-line text's new text; clears its state otherwise.
 pub fn show(app: &mut CadApp, ctx: &egui::Context) {
-    let line = app.session.editing_line();
-    let asking = app.session.current_prompt().is_some_and(|p| p.accept.text && !p.accept.point);
-    let (Some(t), true) = (line, asking) else {
+    let (Some(t), true) = (app.session.editing_line(), crate::mtext_editor::asking_text(app)) else {
         ctx.data_mut(|d| d.remove::<State>(state_id()));
         return;
     };
     let tk = Tokens::get();
-    let (rect, scale) = app.canvas.xf.map_or((ctx.content_rect(), 20.0), |x| (x.rect, x.scale.max(1e-6)));
+    let (rect, scale) = crate::mtext_editor::canvas_frame(app, ctx);
     let mut st = ctx.data_mut(|d| d.get_temp::<State>(state_id())).unwrap_or_else(|| State { text: t.value.clone(), opened: false });
     let px = ((t.height.max(1e-9) * scale) as f32).clamp(MIN_PX, MAX_PX);
     // The box sits on the text's baseline at its insertion point (rotation is ignored while editing).

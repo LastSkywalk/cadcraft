@@ -24,7 +24,7 @@ fn is_set(cancel: Option<&AtomicBool>) -> bool {
 pub(super) fn draw(b: &mut Builder, ctx: &Ctx, e: &Entity, h: &Hatch, rgb: Ink, lw: f32, tol: f64) {
     let loops = fill_loops(h, tol);
     // Gradient and background colours given ByLayer follow the hatch's own layer.
-    let layer = if e.common.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { e.common.layer.as_str() };
+    let layer = ctx.effective_layer(&e.common.layer);
     let layer_color = ctx.layer_color(layer).unwrap_or(Color::Index(7));
     // Level of detail: a pixel in the hatch's own units, along its most stretched axis (so lines
     // that show apart in any direction are never merged); 0 = full detail.

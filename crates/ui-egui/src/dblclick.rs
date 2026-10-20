@@ -38,11 +38,7 @@ pub enum Action {
 /// than its anonymous variant; `None` for an external reference or an anonymous block of no
 /// dynamic block (nothing the Block Editor offers).
 fn block_to_edit(d: &Drawing, h: Handle, name: &str) -> Option<String> {
-    if let Some(r) = cadcraft_engine::doc::dynblock::reference(d, h) {
-        return Some(r.definition);
-    }
-    let b = d.block(name)?;
-    (!b.anonymous && !b.name.starts_with('*') && b.xref_path.is_none()).then(|| b.name.clone())
+    d.block(&crate::bedit::definition_name(d, h, name)).filter(|b| crate::bedit::editable(b)).map(|b| b.name.clone())
 }
 
 /// The action for object `h` of drawing `d`.
@@ -51,9 +47,9 @@ pub fn action_for(d: &Drawing, h: Handle) -> Option<Action> {
     Some(match &e.kind {
         EntityKind::Text(_) | EntityKind::AttDef(_) | EntityKind::MText(_) | EntityKind::Dimension(_) => Action::EditText,
         EntityKind::MLeader(m) if m.text.is_some() => Action::EditText,
-        EntityKind::Insert(i) if i.attribs.iter().any(|a| !a.constant) => Action::Attributes,
+        EntityKind::Insert(i) if crate::eattedit::has_editable(i) => Action::Attributes,
         EntityKind::Insert(i) => block_to_edit(d, h, &i.block).map_or(Action::Properties, Action::EditBlock),
-        EntityKind::LwPolyline(_) => Action::Pedit,
+        EntityKind::LwPolyline(_) | EntityKind::Polyline3d(_) => Action::Pedit,
         EntityKind::Spline(_) => Action::Splinedit,
         EntityKind::Hatch(_) => Action::HatchEdit,
         _ => Action::Properties,
@@ -67,6 +63,13 @@ fn start_on(app: &mut CadApp, id: &str, p: Vec2) {
     if let Err(e) = app.session.input(Input::Point(p)) {
         app.session.echo(e.to_string());
     }
+}
+
+/// Run command `id` as from a menu on object `h`, selected (it opens its dialog or palette).
+fn run_on(app: &mut CadApp, h: Handle, id: &str) {
+    app.session.set_selection(vec![h]);
+    // `app.run` shows a refusal on the command line itself.
+    let _ = app.run(id, Value::Null);
 }
 
 /// Run the double-click action on the object at `p` (world); false when nothing is there.
@@ -87,23 +90,14 @@ pub fn run(app: &mut CadApp, h: Handle, action: Action, p: Vec2) {
         Action::Splinedit => start_on(app, "splinedit", p),
         Action::Attributes => {
             if !crate::eattedit::open(app, h, Some(p)) {
-                app.session.set_selection(vec![h]);
-                let _ = app.run("properties", Value::Null);
+                run_on(app, h, "properties");
             }
         }
         Action::EditBlock(name) => {
             app.session.set_selection(Vec::new());
             crate::bedit::open_on(app, name);
         }
-        Action::HatchEdit => {
-            app.session.set_selection(vec![h]);
-            crate::hatchdlg::open_edit(app);
-        }
-        Action::Properties => {
-            app.session.set_selection(vec![h]);
-            if let Err(e) = app.run("properties", Value::Null) {
-                app.session.echo(e);
-            }
-        }
+        Action::HatchEdit => run_on(app, h, "hatchedit"),
+        Action::Properties => run_on(app, h, "properties"),
     }
 }

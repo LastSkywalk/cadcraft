@@ -7,24 +7,38 @@ use std::collections::HashMap;
 
 use cadcraft_doc::field::{Field, FieldObject, FieldValue, HOST, MAX_FIELD_CHILDREN, MAX_FIELD_DEPTH};
 use cadcraft_doc::{Handle, RawTag};
-use cadcraft_dxf::Tag;
+use cadcraft_dxf::{Tag, Value};
+
+use crate::dxf_raw::norm;
 
 /// Most objects a field reads.
 const MAX_FIELD_OBJECTS: usize = 256;
 /// Most groups kept from one field's evaluation data.
 const MAX_FIELD_DATA: usize = 4096;
-/// Longest code or value group: DXF strings are split at 250 characters (code 3 continues 2).
-const CHUNK: usize = 250;
+/// Most an attribute's field may weigh ([`weight`]), over all the FIELD objects it is read from:
+/// children may be shared, so a small file could otherwise list one FIELD exponentially often.
+const MAX_FIELD_WEIGHT: usize = 1 << 20;
+/// Most the fields of all of a file's attributes may weigh together (attributes may share one).
+const MAX_FIELDS_WEIGHT: usize = 64 << 20;
 
-/// The OBJECTS section's dictionaries and FIELD objects, by handle (upper case).
+/// The OBJECTS section's dictionaries and FIELD objects, by handle ([`norm`]).
 #[derive(Default)]
 pub(crate) struct FieldIndex {
     dicts: HashMap<String, Vec<(String, String)>>,
-    fields: HashMap<String, Vec<Tag>>,
+    /// FIELD handle → its weight and groups.
+    fields: HashMap<String, (usize, Vec<Tag>)>,
+    /// What the attributes read so far weigh.
+    spent: usize,
 }
 
-fn up(s: &str) -> String {
-    s.trim().to_ascii_uppercase()
+/// Roughly what reading a FIELD record allocates: a slot per group plus its text.
+fn weight(tags: &[Tag]) -> usize {
+    tags.iter()
+        .map(|t| match &t.value {
+            Value::Str(s) | Value::Hex(s) => 32 + s.len(),
+            _ => 32,
+        })
+        .fold(0usize, usize::saturating_add)
 }
 
 /// The dictionaries and fields of a file's OBJECTS section (empty when it has no FIELD).
@@ -36,28 +50,13 @@ pub(crate) fn index(secs: &[cadcraft_dxf::Section]) -> FieldIndex {
     }
     for s in objects {
         for (kind, tags) in cadcraft_dxf::records(&s.tags) {
-            let Some(h) = tags.iter().find(|t| t.code == 5).map(|t| up(&t.str())) else { continue };
-            match kind.as_str() {
-                "DICTIONARY" if ix.dicts.len() < crate::dxf_read::MAX_OBJECTS => {
-                    let mut entries = Vec::new();
-                    let mut key: Option<String> = None;
-                    for t in &tags {
-                        match t.code {
-                            3 => key = Some(t.str()),
-                            350 | 360 => {
-                                if let Some(k) = key.take() {
-                                    entries.push((k, up(&t.str())));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    ix.dicts.insert(h, entries);
+            let Some(h) = tags.iter().find(|t| t.code == 5).map(|t| norm(&t.str())) else { continue };
+            if crate::dxf_raw::is_dictionary(&kind) {
+                if ix.dicts.len() < crate::dxf_read::MAX_OBJECTS {
+                    ix.dicts.insert(h, crate::dxf_raw::entries(&tags));
                 }
-                "FIELD" if ix.fields.len() < crate::dxf_read::MAX_OBJECTS => {
-                    ix.fields.insert(h, tags);
-                }
-                _ => {}
+            } else if kind == "FIELD" && ix.fields.len() < crate::dxf_read::MAX_OBJECTS {
+                ix.fields.insert(h, (weight(&tags), tags));
             }
         }
     }
@@ -70,26 +69,33 @@ impl FieldIndex {
     }
 
     /// The field of an attribute record (its extension dictionary's `ACAD_FIELD` → `TEXT`), on
-    /// block reference `host`.
-    pub(crate) fn attrib_field(&self, tags: &[Tag], host: Option<Handle>) -> Option<Field> {
+    /// block reference `host`. Each attribute's field weighs at most [`MAX_FIELD_WEIGHT`], all of
+    /// them together [`MAX_FIELDS_WEIGHT`]: past that a field is cut short or left out.
+    pub(crate) fn attrib_field(&mut self, tags: &[Tag], host: Option<Handle>) -> Option<Field> {
         if self.fields.is_empty() {
             return None;
         }
-        let i = tags.iter().position(|t| t.code == 102 && t.str().trim() == "{ACAD_XDICTIONARY")?;
-        let xdict = tags.get(i + 1..)?.iter().find(|t| t.code == 360).map(|t| up(&t.str()))?;
+        let xdict = norm(&crate::dxf_read::xdict_handle(tags)?);
         let fields = self.entry(&xdict, "ACAD_FIELD")?;
         let root = self.entry(fields, "TEXT")?;
-        self.field(root, host.map(Handle::hex), 0)
+        let allowed = MAX_FIELD_WEIGHT.min(MAX_FIELDS_WEIGHT.saturating_sub(self.spent));
+        let mut budget = allowed;
+        let f = self.field(root, host.map(Handle::hex).as_deref(), &mut Vec::new(), &mut budget);
+        self.spent = self.spent.saturating_add(allowed.saturating_sub(budget));
+        f
     }
 
-    fn field(&self, h: &str, host: Option<String>, depth: usize) -> Option<Field> {
-        if depth >= MAX_FIELD_DEPTH {
+    /// The FIELD `h` and its children, unless it is one of its own ancestors (`path`) or weighs
+    /// more than is left of `budget`.
+    fn field(&self, h: &str, host: Option<&str>, path: &mut Vec<String>, budget: &mut usize) -> Option<Field> {
+        if path.len() >= MAX_FIELD_DEPTH || path.iter().any(|p| p == h) {
             return None;
         }
-        let tags = self.fields.get(h)?;
+        let (cost, tags) = self.fields.get(h)?;
+        *budget = budget.checked_sub(*cost)?;
         let start = tags.iter().position(|t| t.code == 100 && t.str() == "AcDbField").map_or(0, |i| i + 1);
         let tags = tags.get(start..)?;
-        let is_host = |v: &str| host.as_deref().is_some_and(|h| Handle::parse_hex(v).map(Handle::hex).as_deref() == Some(h));
+        let is_host = |v: &str| host.is_some_and(|h| Handle::parse_hex(v).map(Handle::hex).as_deref() == Some(h));
         let mut f = Field {
             evaluator: String::new(),
             code: String::new(),
@@ -101,6 +107,7 @@ impl FieldIndex {
         let mut i = 0;
         // Evaluator, code (with its continuations), children, objects.
         let mut counted = false;
+        path.push(h.to_string());
         while let Some(t) = tags.get(i) {
             match t.code {
                 1 if f.evaluator.is_empty() => f.evaluator = t.str(),
@@ -108,7 +115,7 @@ impl FieldIndex {
                 90 if !counted => counted = true,
                 360 => {
                     if f.children.len() < MAX_FIELD_CHILDREN
-                        && let Some(c) = self.field(&up(&t.str()), host.clone(), depth + 1)
+                        && let Some(c) = self.field(&norm(&t.str()), host, path, budget)
                     {
                         f.children.push(c);
                     }
@@ -128,6 +135,7 @@ impl FieldIndex {
             }
             i += 1;
         }
+        path.pop();
         // Evaluation data up to the cached value.
         while let Some(t) = tags.get(i) {
             if t.code == 7 && t.str() == "ACFD_FIELD_VALUE" {
@@ -158,13 +166,12 @@ fn value(tags: &[Tag]) -> FieldValue {
     }
 }
 
-/// A string split into 250-character DXF groups.
-fn chunks(s: &str) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.is_empty() {
-        return vec![String::new()];
-    }
-    chars.chunks(CHUNK).map(|c| c.iter().collect()).collect()
+/// `s` as a `first` group (written even when empty) followed by `more` groups for what does not
+/// fit in one.
+fn push_long(t: &mut Vec<Tag>, first: i32, more: i32, s: &str) {
+    let mut groups = cadcraft_dxf::string_groups(s).into_iter();
+    t.push(Tag::s(first, groups.next().unwrap_or_default()));
+    t.extend(groups.map(|g| Tag::s(more, g)));
 }
 
 /// The FIELD objects of an attribute's field, as (handle, groups) records owned by the
@@ -184,11 +191,7 @@ fn write_field(f: &Field, owner: &str, host: &str, next: &mut dyn FnMut() -> Str
     };
     let mut t = vec![Tag::s(0, "FIELD"), Tag::s(5, h.clone()), Tag::s(330, owner), Tag::s(100, "AcDbField"), Tag::s(1, f.evaluator.clone())];
     // A code longer than one group goes on in overflow groups (3).
-    let parts = chunks(&f.code);
-    if let Some((first, rest)) = parts.split_first() {
-        t.push(Tag::s(2, first.clone()));
-        t.extend(rest.iter().map(|p| Tag::s(3, p.clone())));
-    }
+    push_long(&mut t, 2, 3, &f.code);
     t.push(Tag::i(90, children.len() as i64));
     t.extend(children.iter().map(|c| Tag::s(360, c.clone())));
     t.push(Tag::i(97, f.objects.len() as i64));
@@ -250,11 +253,7 @@ fn write_field(f: &Field, owner: &str, host: &str, next: &mut dyn FnMut() -> Str
             ]);
         }
     }
-    let shown_parts = chunks(&shown);
-    if let Some((first, rest)) = shown_parts.split_first() {
-        t.push(Tag::s(301, first.clone()));
-        t.extend(rest.iter().map(|p| Tag::s(9, p.clone())));
-    }
+    push_long(&mut t, 301, 9, &shown);
     t.push(Tag::i(98, shown.chars().count() as i64));
     if let Some(slot) = out.get_mut(at) {
         slot.1 = t;

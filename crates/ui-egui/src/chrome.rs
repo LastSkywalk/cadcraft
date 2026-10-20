@@ -337,7 +337,7 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
             (Icon::Isodraft, s.isodraft, "isodraft", "Isometric Drafting"),
             (Icon::OTrack, s.otrack, "otrack", "Object Snap Tracking (F11)"),
             (Icon::Osnap, s.osmode & mode::OFF == 0 && s.osmode != 0, "osnap", "Object Snap (F3)"),
-            (Icon::Lineweight, s.lwdisplay, "lwdisplay", "Show/Hide Lineweight"),
+            (Icon::Lineweight, app.session.lwdisplay(), "lwdisplay", "Show/Hide Lineweight"),
             (Icon::Transparency, s.transparency_display, "transparencydisplay", "Show/Hide Transparency"),
             (Icon::DynInput, s.dynmode, "dynmode", "Dynamic Input (F12)"),
             (Icon::QuickProps, s.qpmode, "qpmode", "Quick Properties"),

@@ -41,6 +41,17 @@ impl Guarded {
     fn internal(&self, p: &(dyn Any + Send)) -> EngineError {
         EngineError::Internal(self.inner.name().to_ascii_lowercase(), message(p))
     }
+    /// `f`, a step that only reads: `fallback` once the command is broken or if `f` panics (which
+    /// breaks it, as `what`).
+    fn quiet<T>(&self, what: &'static str, fallback: T, f: impl FnOnce() -> T) -> T {
+        if self.broken.get().is_some() {
+            return fallback;
+        }
+        catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+            self.broken.set(Some(what));
+            fallback
+        })
+    }
 }
 
 impl Interactive for Guarded {
@@ -67,58 +78,22 @@ impl Interactive for Guarded {
         catch_unwind(AssertUnwindSafe(|| self.inner.begin(s))).unwrap_or_else(|p| Err(self.internal(&*p)))
     }
     fn preview(&self, s: &Session, cursor: Vec2) -> Vec<EntityKind> {
-        if self.broken.get().is_some() {
-            return Vec::new();
-        }
-        catch_unwind(AssertUnwindSafe(|| self.inner.preview(s, cursor))).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in preview"));
-            Vec::new()
-        })
+        self.quiet("panic in preview", Vec::new(), || self.inner.preview(s, cursor))
     }
     fn preview_objects(&self, s: &Session, cursor: Vec2) -> Vec<cadcraft_doc::Entity> {
-        if self.broken.get().is_some() {
-            return Vec::new();
-        }
-        catch_unwind(AssertUnwindSafe(|| self.inner.preview_objects(s, cursor))).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in preview"));
-            Vec::new()
-        })
+        self.quiet("panic in preview", Vec::new(), || self.inner.preview_objects(s, cursor))
     }
     fn drag(&self, s: &Session, cursor: Vec2) -> Option<crate::prompt::Drag> {
-        if self.broken.get().is_some() {
-            return None;
-        }
-        catch_unwind(AssertUnwindSafe(|| self.inner.drag(s, cursor))).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in preview"));
-            None
-        })
+        self.quiet("panic in preview", None, || self.inner.drag(s, cursor))
     }
     fn editing_mtext(&self) -> Option<cadcraft_doc::MText> {
-        if self.broken.get().is_some() {
-            return None;
-        }
-        catch_unwind(AssertUnwindSafe(|| self.inner.editing_mtext())).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in prompt"));
-            None
-        })
+        self.quiet("panic in prompt", None, || self.inner.editing_mtext())
     }
     fn editing_line(&self) -> Option<cadcraft_doc::Text> {
-        if self.broken.get().is_some() {
-            return None;
-        }
-        catch_unwind(AssertUnwindSafe(|| self.inner.editing_line())).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in prompt"));
-            None
-        })
+        self.quiet("panic in prompt", None, || self.inner.editing_line())
     }
     fn editing_measurement(&self) -> Option<String> {
-        if self.broken.get().is_some() {
-            return None;
-        }
-        catch_unwind(AssertUnwindSafe(|| self.inner.editing_measurement())).unwrap_or_else(|_| {
-            self.broken.set(Some("panic in prompt"));
-            None
-        })
+        self.quiet("panic in prompt", None, || self.inner.editing_measurement())
     }
 }
 

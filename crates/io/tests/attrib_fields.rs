@@ -1,6 +1,6 @@
 //! Fields of block attributes (#1321): an attribute whose value AutoCAD computes from its dynamic
-//! block reference — VetCAD's rebar positions, lengths and counts — keeps its field through a
-//! read and a save (DXF and DWG), and shows the new value when the reference changes. The drawing
+//! block reference — a length or a count, say — keeps its field through a read and a save (DXF
+//! and DWG), and shows the new value when the reference changes. The drawing
 //! is the synthetic DOOR block (with the grips of the engine's grip tests) and a reference whose
 //! attribute reads "W=<Width>".
 
@@ -163,5 +163,40 @@ fn hostile_field_trees_do_not_panic() {
         cadcraft_doc::field::update_all(&mut d);
         let _ = dynblock::set_property(&mut d, REF, "Width", "30");
         let _ = cadcraft_io::write(&d, "door.dxf");
+    }
+}
+
+/// The fields of a field tree: the root and every child, at any depth.
+fn nodes(f: &cadcraft_doc::field::Field) -> usize {
+    1 + f.children.iter().map(nodes).sum::<usize>()
+}
+
+#[test]
+fn a_field_tree_that_lists_its_children_over_and_over_reads_quickly() {
+    let src = fixture();
+    let many = |h: &str| format!("360\n{h}\n").repeat(256);
+    // The root lists itself 256 times; its child lists itself too.
+    let cyclic = src
+        .replace("90\n1\n360\n93\n97\n0\n", &format!("90\n257\n{}360\n93\n97\n0\n", many("92")))
+        .replace("90\n0\n97\n1\n331\n80\n", &format!("90\n256\n{}97\n1\n331\n80\n", many("93")));
+    // No cycle, but each of 16 levels lists the next 256 times: 256^15 paths through the tree.
+    let mut chain = String::new();
+    for k in 0..16u32 {
+        let next = if k < 15 { many(&format!("{:X}", 0xA00 + k + 1)) } else { String::new() };
+        chain.push_str(&format!(
+            "0\nFIELD\n5\n{:X}\n330\n92\n100\nAcDbField\n1\n_text\n2\nX\n90\n{}\n{next}97\n0\n7\nACFD_FIELD_VALUE\n93\n0\n90\n0\n",
+            0xA00 + k,
+            if k < 15 { 256 } else { 0 }
+        ));
+    }
+    let shared =
+        src.replace("90\n1\n360\n93\n97\n0\n", "90\n1\n360\nA00\n97\n0\n").replace("98\n2\n0\nENDSEC\n", &format!("98\n2\n{chain}0\nENDSEC\n"));
+    for (name, text) in [("cyclic", cyclic), ("shared", shared)] {
+        let t = std::time::Instant::now();
+        let d = cadcraft_io::read_dxf(text.as_bytes()).unwrap();
+        let f = attrib(&d, REF).field.expect("the root field");
+        assert!(nodes(&f) < 10_000, "{name}: {} fields", nodes(&f));
+        let _ = cadcraft_io::write(&d, "door.dxf").unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(20), "{name}: {:?}", t.elapsed());
     }
 }

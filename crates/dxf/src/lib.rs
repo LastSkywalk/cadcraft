@@ -407,6 +407,30 @@ pub fn format_real(v: f64) -> String {
     if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") { s } else { format!("{s}.0") }
 }
 
+/// Most characters one string group holds: longer text is split over several groups (MTEXT
+/// contents, field codes).
+pub const MAX_STRING_CHARS: usize = 250;
+
+/// `s` split into strings of at most [`MAX_STRING_CHARS`] characters, in order; none for an
+/// empty string.
+pub fn string_groups(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut n = 0;
+    for c in s.chars() {
+        if n == MAX_STRING_CHARS {
+            out.push(std::mem::take(&mut cur));
+            n = 0;
+        }
+        cur.push(c);
+        n += 1;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Write tags as ASCII DXF (CRLF line ends, codes right-aligned to 3 as is conventional).
 ///
 /// The output is pure ASCII: non-ASCII characters in strings are written as `\U+XXXX` escapes,
@@ -591,6 +615,16 @@ mod tests {
             assert!(s.len() < 32, "{s}");
             assert_eq!(s.parse::<f64>().ok(), Some(v), "{s}");
         }
+    }
+    #[test]
+    fn long_strings_split_into_250_character_groups() {
+        assert!(string_groups("").is_empty());
+        assert_eq!(string_groups("abc"), ["abc"]);
+        let s = "é".repeat(251);
+        let g = string_groups(&s);
+        assert_eq!(g.iter().map(|x| x.chars().count()).collect::<Vec<_>>(), [250, 1]);
+        assert_eq!(g.concat(), s);
+        assert_eq!(string_groups(&"x".repeat(500)).len(), 2);
     }
     #[test]
     fn ascii_roundtrip() {

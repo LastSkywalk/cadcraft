@@ -14,9 +14,9 @@
 //! On native builds both start from the `CADCRAFT_FONTALT` / `CADCRAFT_FONTFALLBACK`
 //! environment variables.
 //!
-//! Where fonts are looked for: a user's own folders first (`CADCRAFT_FONTPATH`, and the `fonts`
-//! folder beside CADCraft's configuration file), then the system's, then the embedded
-//! craft-fonts set — see [`user_font_dirs`].
+//! Where fonts are looked for: a user's own folders first (`CADCRAFT_FONTPATH`, then the folders
+//! the application registers with [`set_user_font_dirs`]), then the embedded craft-fonts set,
+//! then the system's folders.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -208,88 +208,93 @@ enum Source {
     Static(&'static [u8]),
 }
 
-fn lock() -> MutexGuard<'static, Db> {
+fn db() -> MutexGuard<'static, Db> {
     static DB: OnceLock<Mutex<Db>> = OnceLock::new();
-    let mut g = DB.get_or_init(|| Mutex::new(Db::default())).lock().unwrap_or_else(PoisonError::into_inner);
+    DB.get_or_init(|| Mutex::new(Db::default())).lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The font database, its folders listed on first use.
+fn lock() -> MutexGuard<'static, Db> {
+    let mut g = db();
     if !g.scanned {
         g.scanned = true;
-        g.paths = scan().into_iter().map(|(stem, p)| (stem, Source::File(p))).collect();
-        // Embedded craft-fonts fonts take the place of an installed file with the same stem.
+        let (user, system) = scan();
+        g.paths = system.into_iter().map(|(stem, p)| (stem, Source::File(p))).collect();
+        // Embedded craft-fonts fonts take the place of an installed file with the same stem, and
+        // a file in the user's own folders takes theirs.
         for f in crate::CRAFT_FONTS {
             g.paths.insert(f.stem(), Source::Static(f.bytes));
+        }
+        for (stem, p) in user {
+            g.paths.insert(stem, Source::File(p));
         }
     }
     g
 }
 
-/// The most directories [`user_font_dirs`] takes from `CADCRAFT_FONTPATH`.
-#[cfg(not(target_arch = "wasm32"))]
+/// The most folders taken from `CADCRAFT_FONTPATH`, and from [`set_user_font_dirs`].
 const MAX_FONT_DIRS: usize = 16;
 
+/// The folders of the user's own fonts the application registered.
+fn registered_dirs() -> MutexGuard<'static, Vec<PathBuf>> {
+    static DIRS: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+    DIRS.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Register the application's own font folders (CADCraft's is the `fonts` folder in its settings
+/// directory): looked in after `CADCRAFT_FONTPATH`, before the system's folders, at most
+/// [`MAX_FONT_DIRS`]. Set them at start-up, before text is laid out: the folders are listed on
+/// the first lookup, and a call after it lists them again, but a font already read keeps the
+/// file it was read from. Without a file system (wasm) they are never looked in.
+pub fn set_user_font_dirs(dirs: Vec<PathBuf>) {
+    *registered_dirs() = dirs.into_iter().filter(|d| !d.as_os_str().is_empty()).take(MAX_FONT_DIRS).collect();
+    let mut g = db();
+    if g.scanned {
+        g.scanned = false;
+        g.resolved.clear();
+        g.fallback = Fallback::default();
+    }
+}
+
+/// The font files in the user's own folders and in the system's, by lower-case file stem.
 #[cfg(not(target_arch = "wasm32"))]
-fn scan() -> HashMap<String, PathBuf> {
-    let mut out = HashMap::new();
-    // The user's own folders first: a font they put there is the font they mean by that name.
-    walk(user_font_dirs(), &mut out);
-    walk(system_font_dirs(), &mut out);
-    out
+fn scan() -> (HashMap<String, PathBuf>, HashMap<String, PathBuf>) {
+    let (mut user, mut system) = (HashMap::new(), HashMap::new());
+    walk(user_font_dirs(), &mut user);
+    walk(system_font_dirs(), &mut system);
+    (user, system)
 }
 
 /// The folders a user's own fonts are looked in, before the installed ones: `CADCRAFT_FONTPATH`
-/// (a list in the platform's path separator), then CADCraft's `fonts` folder in its
-/// configuration directory. A font AutoCAD has but this machine hasn't (ISOCPEUR on macOS, say)
-/// can be dropped in one of them — the user supplies that file, and CADCraft reads it by name
-/// like any other installed font. Empty on wasm, which has no file system.
+/// (a list in the platform's path separator), then the folders the application registered
+/// ([`set_user_font_dirs`]). A font a drawing names that this machine doesn't have can be put in
+/// one of them, and is found by name like any installed font.
 #[cfg(not(target_arch = "wasm32"))]
 fn user_font_dirs() -> Vec<PathBuf> {
     let split = |list: &std::ffi::OsStr| std::env::split_paths(list).collect::<Vec<PathBuf>>();
-    user_font_dirs_from(std::env::var_os("CADCRAFT_FONTPATH"), config_dir(), split)
+    let registered = registered_dirs().clone();
+    user_font_dirs_from(std::env::var_os("CADCRAFT_FONTPATH"), registered, split)
 }
 
-/// [`user_font_dirs`] with the environment, the configuration directory and the separator
-/// supplied, so it can be tested: the list is capped at [`MAX_FONT_DIRS`] folders, empty entries
-/// are dropped, and the configuration folder is last.
+/// [`user_font_dirs`] with the environment, the registered folders and the separator supplied:
+/// the list is capped at [`MAX_FONT_DIRS`] folders and empty entries are dropped, and the
+/// registered folders come after it.
 #[cfg(not(target_arch = "wasm32"))]
-fn user_font_dirs_from(list: Option<std::ffi::OsString>, config: Option<PathBuf>, split: impl Fn(&std::ffi::OsStr) -> Vec<PathBuf>) -> Vec<PathBuf> {
+fn user_font_dirs_from(list: Option<std::ffi::OsString>, registered: Vec<PathBuf>, split: impl Fn(&std::ffi::OsStr) -> Vec<PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     if let Some(l) = list {
         out.extend(split(&l).into_iter().filter(|p| !p.as_os_str().is_empty()).take(MAX_FONT_DIRS));
     }
-    if let Some(c) = config {
-        out.push(c.join("fonts"));
-    }
+    out.extend(registered);
     out
 }
 
-/// CADCraft's configuration directory (the app's own, `apps/cadcraft/src/workspace.rs`): the
-/// `CADCRAFT_CONFIG_DIR` override, else the platform's usual place.
-#[cfg(not(target_arch = "wasm32"))]
-fn config_dir() -> Option<PathBuf> {
-    config_dir_from(|k| std::env::var_os(k).filter(|v| !v.is_empty()), cfg!(target_os = "macos"), cfg!(windows))
-}
-
-/// [`config_dir`] with the environment and the platform supplied, so it can be tested.
-#[cfg(not(target_arch = "wasm32"))]
-fn config_dir_from(get: impl Fn(&str) -> Option<std::ffi::OsString>, macos: bool, windows: bool) -> Option<PathBuf> {
-    if let Some(d) = get("CADCRAFT_CONFIG_DIR") {
-        return Some(PathBuf::from(d));
-    }
-    if macos {
-        get("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/CADCraft"))
-    } else if windows {
-        get("APPDATA").map(|r| PathBuf::from(r).join("CADCraft"))
-    } else {
-        get("XDG_CONFIG_HOME")
-            .filter(|r| PathBuf::from(r).is_absolute())
-            .map(|r| PathBuf::from(r).join("cadcraft"))
-            .or_else(|| get("HOME").map(|h| PathBuf::from(h).join(".config/cadcraft")))
-    }
-}
-
-/// Every font file under `dirs` into `out`, keeping the name already there. Cap 20 000 entries.
+/// Every font file under `dirs` into `out` by lower-case file stem, a file in an earlier folder
+/// taking the place of one with the same stem in a later one. Cap 20 000 entries.
 #[cfg(not(target_arch = "wasm32"))]
 fn walk(dirs: Vec<PathBuf>, out: &mut HashMap<String, PathBuf>) {
-    let mut stack = dirs;
+    // Popped from the end: the first folder, and the folders under it, are walked first.
+    let mut stack: Vec<PathBuf> = dirs.into_iter().rev().collect();
     let mut seen = 0usize;
     while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
@@ -314,33 +319,33 @@ fn walk(dirs: Vec<PathBuf>, out: &mut HashMap<String, PathBuf>) {
     }
 }
 
-/// The installed fonts, by the platform's usual folders.
+/// The installed fonts' folders, the platform's usual ones, a user's own installed fonts first.
 #[cfg(not(target_arch = "wasm32"))]
 fn system_font_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if cfg!(target_os = "macos") {
-        dirs.extend(["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts"].map(Into::into));
         if let Some(h) = std::env::var_os("HOME") {
             dirs.push(PathBuf::from(h).join("Library/Fonts"));
         }
+        dirs.extend(["/Library/Fonts", "/System/Library/Fonts/Supplemental", "/System/Library/Fonts"].map(Into::into));
     } else if cfg!(windows) {
-        dirs.push("C:\\Windows\\Fonts".into());
         if let Some(l) = std::env::var_os("LOCALAPPDATA") {
             dirs.push(PathBuf::from(l).join("Microsoft\\Windows\\Fonts"));
         }
+        dirs.push("C:\\Windows\\Fonts".into());
     } else {
-        dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(Into::into));
         if let Some(h) = std::env::var_os("HOME") {
-            dirs.push(PathBuf::from(&h).join(".fonts"));
-            dirs.push(PathBuf::from(h).join(".local/share/fonts"));
+            dirs.push(PathBuf::from(&h).join(".local/share/fonts"));
+            dirs.push(PathBuf::from(h).join(".fonts"));
         }
+        dirs.extend(["/usr/local/share/fonts", "/usr/share/fonts"].map(Into::into));
     }
     dirs
 }
 
 #[cfg(target_arch = "wasm32")]
-fn scan() -> HashMap<String, PathBuf> {
-    HashMap::new()
+fn scan() -> (HashMap<String, PathBuf>, HashMap<String, PathBuf>) {
+    (HashMap::new(), HashMap::new())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -936,47 +941,45 @@ pub fn layout_line(face: &Face, s: &str, height: f64, width_factor: f64, oblique
     Some(Run { strokes, width: sh.width })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod dir_tests {
-    #[cfg(not(target_arch = "wasm32"))]
     use super::*;
 
-    /// The configuration directory is the app's own (`CADCRAFT_CONFIG_DIR`, else the platform's
-    /// usual place), so the fonts folder we look in matches where the app keeps its settings.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn the_configuration_directory_follows_the_app() {
-        use std::ffi::OsString;
-        let env = |pairs: &[(&str, &str)]| {
-            let pairs: Vec<(String, OsString)> = pairs.iter().map(|(k, v)| ((*k).to_string(), OsString::from(*v))).collect();
-            move |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
-        };
-        let mac = config_dir_from(env(&[("HOME", "/Users/u")]), true, false);
-        assert_eq!(mac, Some(PathBuf::from("/Users/u/Library/Application Support/CADCraft")));
-        assert_eq!(config_dir_from(env(&[("APPDATA", "C:\\a")]), false, true), Some(PathBuf::from("C:\\a").join("CADCraft")));
-        assert_eq!(config_dir_from(env(&[("XDG_CONFIG_HOME", "/x"), ("HOME", "/home/u")]), false, false), Some(PathBuf::from("/x/cadcraft")));
-        assert_eq!(config_dir_from(env(&[("HOME", "/home/u")]), false, false), Some(PathBuf::from("/home/u/.config/cadcraft")));
-        // A relative XDG_CONFIG_HOME is ignored, as the spec says, and an override wins.
-        assert_eq!(
-            config_dir_from(env(&[("XDG_CONFIG_HOME", "rel"), ("HOME", "/home/u")]), false, false),
-            Some(PathBuf::from("/home/u/.config/cadcraft"))
-        );
-        assert_eq!(config_dir_from(env(&[("CADCRAFT_CONFIG_DIR", "/tmp/cc"), ("HOME", "/home/u")]), false, false), Some(PathBuf::from("/tmp/cc")));
-        assert_eq!(config_dir_from(env(&[]), false, false), None);
-    }
-    /// The user's folders come first — `CADCRAFT_FONTPATH` (empty entries dropped, capped), then
-    /// the configuration folder that a font dropped into the app's own directory is found in.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The user's folders: `CADCRAFT_FONTPATH` (empty entries dropped, capped), then the ones
+    /// the application registered.
     #[test]
     fn a_users_own_font_folders_come_first() {
         let split = |l: &std::ffi::OsStr| l.to_string_lossy().split(':').map(PathBuf::from).collect::<Vec<PathBuf>>();
         let os = |s: &str| std::ffi::OsString::from(s);
-        let dirs = user_font_dirs_from(Some(os("/a::/b")), Some(PathBuf::from("/cfg")), split);
+        let cfg = vec![PathBuf::from("/cfg/fonts")];
+        let dirs = user_font_dirs_from(Some(os("/a::/b")), cfg.clone(), split);
         assert_eq!(dirs, vec![PathBuf::from("/a"), PathBuf::from("/b"), PathBuf::from("/cfg/fonts")]);
         let many = (0..40).map(|i| format!("/d{i}")).collect::<Vec<String>>().join(":");
-        assert_eq!(user_font_dirs_from(Some(os(&many)), None, split).len(), MAX_FONT_DIRS);
-        assert_eq!(user_font_dirs_from(Some(os("")), Some(PathBuf::from("/cfg")), split), vec![PathBuf::from("/cfg/fonts")]);
-        assert!(user_font_dirs_from(None, None, split).is_empty());
+        assert_eq!(user_font_dirs_from(Some(os(&many)), Vec::new(), split).len(), MAX_FONT_DIRS);
+        assert_eq!(user_font_dirs_from(Some(os("")), cfg.clone(), split), cfg);
+        assert!(user_font_dirs_from(None, Vec::new(), split).is_empty());
+    }
+
+    /// A font file in an earlier folder is the one found by its name, also when a later folder
+    /// holds one with the same name in a folder of its own.
+    #[test]
+    fn an_earlier_folder_wins() {
+        let root = std::env::temp_dir().join(format!("cadcraft-font-dirs-{}", std::process::id()));
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(b.join("sub")).unwrap();
+        for p in [a.join("Plan.ttf"), b.join("plan.ttf"), b.join("sub").join("plan.otf"), b.join("other.otf"), b.join("notes.txt")] {
+            std::fs::write(&p, b"").unwrap();
+        }
+        let mut out = HashMap::new();
+        walk(vec![a.clone(), b.clone()], &mut out);
+        assert_eq!(out.get("plan"), Some(&a.join("Plan.ttf")));
+        assert_eq!(out.get("other"), Some(&b.join("other.otf")));
+        assert_eq!(out.len(), 2);
+        let mut out = HashMap::new();
+        walk(vec![b.clone(), a], &mut out);
+        assert_eq!(out.get("plan"), Some(&b.join("plan.ttf")));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

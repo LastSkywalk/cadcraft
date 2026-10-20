@@ -1,13 +1,14 @@
 //! Paper sizes and the layout sheet (paper rectangle, printable area) for paper space.
 //!
 //! Paper-space units are millimetres in metric drawings (`MEASUREMENT` = 1) and on layouts whose
-//! page setup is in millimetres, and inches otherwise. The sheet's lower-left corner is the paper-space origin.
+//! page setup is in millimetres, and inches otherwise. Paper space (0,0) is the printable area's
+//! lower-left corner; the sheet reaches down and left of it by the margins and the plot origin
+//! ([`Sheet::origin`]).
 
 use cadcraft_doc::{Drawing, PageSetup};
 use cadcraft_geom::{Bounds2, Vec2};
 
-/// Maximum model-space plot offset accepted by the PLOT command, in millimetres.
-pub const MAX_PLOT_OFFSET_MM: f64 = 100_000.0;
+pub use cadcraft_doc::MAX_PLOT_OFFSET_MM;
 
 /// A standard paper size (portrait: `width_mm <= height_mm`).
 #[derive(Clone, Copy, Debug, PartialEq)]

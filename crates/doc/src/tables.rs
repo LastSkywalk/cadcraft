@@ -739,6 +739,10 @@ impl Block {
     }
 }
 
+/// Largest plot offset ([`PageSetup::plot_origin_mm`]) taken from a file or a command, in
+/// millimetres either way; a larger or non-finite one is not used.
+pub const MAX_PLOT_OFFSET_MM: f64 = 100_000.0;
+
 /// Paper size and plot settings for a layout (page setup).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -751,7 +755,8 @@ pub struct PageSetup {
     pub margins_mm: [f64; 4],
     /// Plot origin (X, Y) in millimetres from the printable area's lower-left corner: the paper
     /// the layout is drawn on sits that much further down and left of paper space (0,0), as the
-    /// plot's "Plot offset (origin set to printable area)" does (PLOTSETTINGS 46/47).
+    /// plot's "Plot offset (origin set to printable area)" does (PLOTSETTINGS 46/47). Each is
+    /// within [`MAX_PLOT_OFFSET_MM`] either way.
     pub plot_origin_mm: [f64; 2],
     pub landscape: bool,
     /// "layout" | "extents" | "display" | "window" | "limits".

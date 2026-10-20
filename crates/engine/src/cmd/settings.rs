@@ -18,7 +18,7 @@ fn toggle(s: &mut Session, p: &Value, get: fn(&mut crate::Settings) -> &mut bool
 /// LWDISPLAY is saved in the drawing (as in AutoCAD), so the toggle writes the header the canvas
 /// reads it from.
 fn run_lwdisplay(s: &mut Session, p: &Value) -> Result<Value> {
-    let on = p.get("on").and_then(Value::as_bool).unwrap_or(!s.drafting_settings().lwdisplay);
+    let on = p.get("on").and_then(Value::as_bool).unwrap_or(!s.lwdisplay());
     s.doc_mut()?.header.set_i64("LWDISPLAY", i64::from(on));
     s.touch();
     Ok(json!({ "on": on, "message": format!("<Lineweight {}>", if on { "on" } else { "off" }) }))

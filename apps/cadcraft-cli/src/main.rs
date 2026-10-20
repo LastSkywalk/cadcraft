@@ -684,6 +684,7 @@ fn main() -> ExitCode {
 
 fn cli() -> ExitCode {
     install_io();
+    cadcraft_fonts::ttf::set_user_font_dirs(cadcraft_engine::config_dir::user_font_dirs());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest: Vec<String> = args.iter().skip(1).cloned().collect();
     let r = match args.first().map(String::as_str) {

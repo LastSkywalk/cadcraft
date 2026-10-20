@@ -1,12 +1,12 @@
 //! A double-click on an object does what AutoCAD's default double-click action for it does
-//! (#1321): text opens the in-place editor, a dimension the multiline editor with its
+//! (#842, #1321): text opens the in-place editor, a dimension the multiline editor with its
 //! measurement, a block reference with attributes the Enhanced Attribute Editor, another block
 //! reference the Edit Block Definition dialog, a polyline PEDIT, anything else the Properties
 //! palette with the object selected.
 
-use cadcraft_engine::Session;
 use cadcraft_engine::doc::{EntityKind, Handle};
 use cadcraft_engine::geom::Vec2;
+use cadcraft_engine::{Input, Session};
 use cadcraft_ui_egui::{CadApp, Services};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::Harness;
@@ -14,6 +14,11 @@ use egui_kittest::kittest::Queryable;
 use serde_json::{Value, json};
 
 fn harness(setup: impl FnOnce(&mut Session)) -> Harness<'static, CadApp> {
+    harness_at(setup, [50.0, 50.0], 100.0)
+}
+
+/// [`harness`] showing the view of `center` and `height`.
+fn harness_at(setup: impl FnOnce(&mut Session), center: [f64; 2], height: f64) -> Harness<'static, CadApp> {
     let mut app = CadApp::new(Session::new(), Services::default());
     app.canvas.zoom_pending = false;
     setup(&mut app.session);
@@ -28,7 +33,7 @@ fn harness(setup: impl FnOnce(&mut Session)) -> Harness<'static, CadApp> {
     );
     h.run_steps(3);
     h.state_mut().canvas.zoom_pending = false;
-    h.state_mut().session.execute("view.set", &json!({"center": [50, 50], "height": 100})).unwrap();
+    h.state_mut().session.execute("view.set", &json!({"center": center, "height": height})).unwrap();
     h.run_steps(3);
     h
 }
@@ -269,4 +274,46 @@ fn a_line_is_selected_with_the_properties_palette_open() {
     assert!(running(&h).is_none());
     assert_eq!(h.state().session.selection(), vec![e]);
     assert!(h.state().ui.show_palettes, "the Properties palette opens");
+}
+
+/// Text, multiline text and a line, seen at 1:1-ish.
+fn texts(s: &mut Session) {
+    s.execute("text", &json!({ "at": [0, 0], "text": "HELLO", "height": 2.5 })).unwrap();
+    s.execute("mtext", &json!({ "at": [0, 20], "text": "first\\Psecond", "height": 2.5, "width": 20 })).unwrap();
+    s.execute("line", &json!({ "points": [[30, 0], [30, 20]] })).unwrap();
+}
+
+#[test]
+fn the_clicked_text_is_already_picked_and_textedit_goes_on() {
+    for (i, at, old, new) in [(0, Vec2::new(4.0, 1.2), "HELLO", "HELLO WORLD"), (1, Vec2::new(3.0, 18.8), "first second", "edited")] {
+        let mut h = harness_at(texts, [15.0, 10.0], 40.0);
+        double_click(&mut h, at);
+        let s = &h.state().session;
+        assert_eq!(s.running.as_ref().map(|r| r.id.as_str()), Some("textedit"), "object {i}");
+        let p = s.current_prompt().unwrap();
+        assert_eq!(p.message, "Enter new text", "object {i}");
+        // The default on one line (multiline text: its lines run together).
+        assert_eq!(p.default.as_deref(), Some(old), "object {i}");
+        h.state_mut().session.input(Input::Text(new.into())).unwrap();
+        h.run_steps(2);
+        let d = h.state().session.doc().unwrap();
+        let text = match &d.model.iter().nth(i).unwrap().kind {
+            EntityKind::Text(t) => t.value.clone(),
+            EntityKind::MText(t) => t.contents.clone(),
+            k => panic!("not text: {}", k.type_name()),
+        };
+        assert_eq!(text, new);
+        // TEXTEDIT goes on asking for objects (its Multiple mode), as AutoCAD's does.
+        assert_eq!(h.state().session.current_prompt().unwrap().message, "Select an annotation object");
+    }
+}
+
+#[test]
+fn a_double_click_on_nothing_starts_no_command() {
+    for at in [Vec2::new(40.0, 5.0), Vec2::new(15.0, 30.0)] {
+        let mut h = harness_at(texts, [15.0, 10.0], 40.0);
+        double_click(&mut h, at);
+        assert_eq!(running(&h), None, "{at:?}");
+        assert!(h.state().ui.dialog.is_none(), "{at:?}");
+    }
 }

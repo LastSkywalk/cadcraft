@@ -1,8 +1,8 @@
 //! Block properties tables (`BLOCKPROPERTIESTABLE`) of dynamic blocks, decoded from their DWG
 //! records. The DWG reader keeps them as raw record bytes, which the DXF rendition can't carry,
-//! so a dynamic block that sets its user parameters from a properties table (VetCAD's rebar
-//! blocks: class and diameter → the values their attributes read) lost the table and, saved
-//! again, made AutoCAD show `##` in those attributes (#1321). Decoded here into the groups
+//! so a dynamic block that sets its user parameters from a properties table (a row
+//! picked by name → the values its attributes read) would lose the table, and AutoCAD would
+//! show `##` in those attributes of the drawing saved again (#1321). Decoded into the groups
 //! AutoCAD writes for the object in DXF, the table goes through like any other object.
 //!
 //! The record after the object header: the evaluation expression, block element, parameter and
@@ -10,28 +10,27 @@
 //! description and columns (each the parameter and property it sets, the parameter's node, a
 //! default and an unmatched value, five flags, a format and a second reference), its rows (an
 //! index and one value per column) and three flags. Values are typed: a code, then the value
-//! (1 text, 40 real, 90 long, 70 short; -9999 none). Checked against AutoCAD's own DXF of the
-//! same drawings, every group equal.
+//! (1 text, 40 real, 90 long, 70 short; -9999 none).
 
 use acadrust::io::dwg::dwg_stream_readers::merged_reader::DwgMergedReader;
 use acadrust::objects::ObjectType;
 use acadrust::types::DxfVersion;
 
-/// Most columns, rows and property connections a table is decoded with.
+use crate::record::{Groups, hex};
+
+/// Most columns and rows a table is decoded with.
 const MAX_COLUMNS: i32 = 256;
 const MAX_ROWS: i32 = 100_000;
-const MAX_CONNECTIONS: i32 = 256;
-const MAX_EED: usize = 4096;
-
-/// Groups of one decoded record.
-type Groups = Vec<(i32, String)>;
+/// Most cells (rows × columns, a value of two groups each) a table is decoded with.
+const MAX_CELLS: i64 = 1_000_000;
 
 fn real(v: f64) -> String {
     if v.is_finite() { format!("{v:?}") } else { "0.0".into() }
 }
 
-fn hex(h: u64) -> String {
-    format!("{h:X}")
+/// Whether a table of `rows` rows of `columns` columns is within the decoder's limits.
+fn fits(rows: i32, columns: i32) -> bool {
+    (0..=MAX_ROWS).contains(&rows) && (0..=MAX_COLUMNS).contains(&columns) && i64::from(rows) * i64::from(columns) <= MAX_CELLS
 }
 
 /// A typed value: its code (170), then the value in the group its type has.
@@ -53,44 +52,8 @@ fn value(r: &mut DwgMergedReader, out: &mut Groups) -> Option<()> {
 /// Decode one table record (`data`, its handle stream `handle_bits` long) into its DXF groups,
 /// or `None` when it isn't one this decoder reads completely.
 pub(crate) fn decode(data: &[u8], handle_bits: i64, version: DxfVersion) -> Option<Groups> {
-    let total = i64::try_from(data.len()).ok()?.checked_mul(8)?;
-    let handles_at = total.checked_sub(handle_bits).filter(|b| *b > 0)?;
-    let mut r = DwgMergedReader::new(data.to_vec(), version, handles_at);
-    r.setup_text_and_handle(handles_at);
-    let mut out: Groups = Vec::new();
-    // Object header: type, handle, extended data (skipped), owner, reactors, dictionary.
-    r.read_object_type();
-    let handle = r.main_mut().read_handle();
-    r.set_ref_handle(handle);
-    for _ in 0..MAX_EED {
-        let size = r.read_bit_short();
-        if size <= 0 {
-            break;
-        }
-        r.main_mut().read_handle();
-        r.read_bytes(usize::try_from(size).ok()?);
-    }
-    r.read_handle();
-    let reactors = r.read_bit_long();
-    if !(0..=MAX_CONNECTIONS).contains(&reactors) {
-        return None;
-    }
-    let reactors: Vec<u64> = (0..reactors).map(|_| r.read_handle()).collect();
-    if !reactors.is_empty() {
-        out.push((102, "{ACAD_REACTORS".into()));
-        out.extend(reactors.iter().map(|h| (330, hex(*h))));
-        out.push((102, "}".into()));
-    }
-    let xdict = if r.read_bit() { None } else { Some(r.read_handle()) };
-    if let Some(x) = xdict {
-        out.push((102, "{ACAD_XDICTIONARY".into()));
-        out.push((360, hex(x)));
-        out.push((102, "}".into()));
-    }
-    if r.read_bit() {
-        // Binary data after the object (2013+): not in these records.
-        return None;
-    }
+    let (mut r, header) = crate::record::open(data, handle_bits, version)?;
+    let mut out = header.groups();
     // Evaluation expression: parent, version, value (none in a table), node.
     r.read_bit_long();
     let (major, minor) = (r.read_bit_long(), r.read_bit_long());
@@ -144,7 +107,7 @@ pub(crate) fn decode(data: &[u8], handle_bits: i64, version: DxfVersion) -> Opti
         out.push((340, hex(r.read_handle())));
     }
     let rows = r.read_bit_long();
-    if !(0..=MAX_ROWS).contains(&rows) {
+    if !fits(rows, columns) {
         return None;
     }
     out.push((92, rows.to_string()));
@@ -185,4 +148,18 @@ pub(crate) fn decode_all(doc: &mut acadrust::CadDocument) -> usize {
         }
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tables_past_the_cell_limit_are_not_decoded() {
+        assert!(fits(0, 0) && fits(MAX_ROWS, 0) && fits(MAX_ROWS, 10) && fits(3_906, MAX_COLUMNS));
+        // The largest rows × columns the counts allow is 25.6 million cells: never read.
+        assert!(!fits(MAX_ROWS, MAX_COLUMNS));
+        assert!(!fits(MAX_ROWS, 11) && !fits(3_907, MAX_COLUMNS));
+        assert!(!fits(-1, 1) && !fits(1, -1) && !fits(MAX_ROWS + 1, 0) && !fits(1, MAX_COLUMNS + 1));
+    }
 }

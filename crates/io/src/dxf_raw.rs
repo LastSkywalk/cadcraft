@@ -57,12 +57,12 @@ const MAX_HANDLE: u64 = 1 << 48;
 /// Record types that structure a file: never written as an entity of another type.
 const STRUCTURAL: &[&str] = &["", "SECTION", "ENDSEC", "EOF", "TABLE", "ENDTAB", "BLOCK", "ENDBLK", "SEQEND", "VERTEX", "ATTRIB", "CLASS"];
 
-fn up(s: &str) -> String {
+pub(crate) fn up(s: &str) -> String {
     s.trim().to_ascii_uppercase()
 }
 
 /// A handle as text, normalised (`002a` → `2A`); other text upper-cased.
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     Handle::parse_hex(s).map_or_else(|| up(s), Handle::hex)
 }
 
@@ -155,7 +155,7 @@ fn val(tags: &[Tag], code: i32) -> Option<String> {
 }
 
 /// A dictionary's entries: (key, upper-case handle).
-fn entries(tags: &[Tag]) -> Vec<(String, String)> {
+pub(crate) fn entries(tags: &[Tag]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut key: Option<String> = None;
     for t in tags.iter().take_while(|t| t.code < 1000) {
@@ -172,7 +172,7 @@ fn entries(tags: &[Tag]) -> Vec<(String, String)> {
     out
 }
 
-fn is_dictionary(kind: &str) -> bool {
+pub(crate) fn is_dictionary(kind: &str) -> bool {
     kind == "DICTIONARY" || kind == "ACDBDICTIONARYWDFLT"
 }
 
@@ -722,8 +722,8 @@ impl Map<'_> {
     }
 }
 
-/// The kept field list, listing the fields written now: the kept ones and those CADCraft wrote
-/// for block attributes (a field whose object is gone is not listed).
+/// The kept field list, listing the fields the written file holds: the kept ones and those
+/// written for block attributes (a field whose object is gone is not listed).
 fn field_list(map: &Map, o: &ForeignObject, recs: &[Rec], tags: &[Tag], out: &mut Vec<Tag>) {
     let set = o.tags.iter().position(|t| t.code == 100 && t.value == "AcDbIdSet");
     let Some(set) = set else {

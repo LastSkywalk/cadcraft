@@ -24,6 +24,7 @@ mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
 pub use grips::{DynGrip, GripPart, GripShape, grips};
+pub(crate) use reference::Reader;
 pub use reference::{CustomProperty, ParamValue, Reference, Value, custom_properties, parameter_value, reference};
 
 /// Most objects one evaluation graph is read with.
@@ -340,10 +341,61 @@ fn graph_members<'a>(objects: &HashMap<Handle, &'a ForeignObject>, xdict: Handle
 /// The dynamic block data of block `name` (any case; `*Model_Space` for a drawing that is a
 /// block's own drawing), or `None` when it has none.
 pub fn dynamic_block(d: &Drawing, name: &str) -> Option<DynamicBlock> {
-    let xdict = d.foreign.records.get(&("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase()))?.xdict?;
-    let objects: HashMap<Handle, &ForeignObject> = d.foreign.objects.iter().map(|o| (o.handle, o)).collect();
+    read_dynamic_block(&objects(d), block_xdict(d, name)?)
+}
+
+/// The extension dictionary of block `name`'s BLOCK_RECORD, when it has one.
+fn block_xdict(d: &Drawing, name: &str) -> Option<Handle> {
+    d.foreign.records.get(&("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase()))?.xdict
+}
+
+/// The kept objects by handle.
+fn objects(d: &Drawing) -> HashMap<Handle, &ForeignObject> {
+    d.foreign.objects.iter().map(|o| (o.handle, o)).collect()
+}
+
+/// The object entry `key` of dictionary `dict` refers to.
+fn entry(objects: &HashMap<Handle, &ForeignObject>, dict: Handle, key: &str) -> Option<Handle> {
+    let o = objects.get(&dict)?;
+    let mut tags = o.tags.iter();
+    while let Some(t) = tags.next() {
+        if t.code == 3 && t.value.eq_ignore_ascii_case(key) {
+            return tags.next().filter(|t| t.code == 350 || t.code == 360).and_then(|t| Handle::parse_hex(&t.value));
+        }
+    }
+    None
+}
+
+/// Every entry of dictionary `dict`: (key, object).
+fn entries(objects: &HashMap<Handle, &ForeignObject>, dict: Handle) -> Vec<(String, Handle)> {
+    let Some(o) = objects.get(&dict) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut key: Option<&str> = None;
+    for t in &o.tags {
+        match t.code {
+            3 => key = Some(t.value.as_str()),
+            350 | 360 => {
+                if let (Some(k), Some(h)) = (key.take(), Handle::parse_hex(&t.value)) {
+                    out.push((k.to_string(), h));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The `ACAD_ENHANCEDBLOCKDATA` dictionary of block representation `rep` (the
+/// `AcDbBlockRepresentation` of a dynamic block reference): its values, one XRECORD per
+/// parameter keyed by graph id.
+fn enhanced_data(objects: &HashMap<Handle, &ForeignObject>, rep: Handle) -> Option<Handle> {
+    entry(objects, rep, "AppDataCache").and_then(|c| entry(objects, c, "ACAD_ENHANCEDBLOCKDATA"))
+}
+
+/// The dynamic block data of the BLOCK_RECORD whose extension dictionary is `xdict`.
+fn read_dynamic_block(objects: &HashMap<Handle, &ForeignObject>, xdict: Handle) -> Option<DynamicBlock> {
     let mut out = DynamicBlock::default();
-    for o in graph_members(&objects, xdict)? {
+    for o in graph_members(objects, xdict)? {
         let secs = sections(&o.tags);
         let node = Cursor::new(section(&secs, "AcDbEvalExpr")).int(90);
         let element = Cursor::new(section(&secs, "AcDbBlockElement")).string(300);

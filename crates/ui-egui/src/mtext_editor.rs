@@ -11,6 +11,7 @@ use egui::text::{CCursor, CCursorRange, LayoutJob};
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Shape, Stroke, TextFormat, pos2, vec2};
 
 use crate::CadApp;
+use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
 mod measure;
@@ -53,6 +54,9 @@ struct State {
     value: Option<(usize, usize)>,
     /// The text `value` was last placed in.
     seen: String,
+    /// The text and measured value's place as the editor opened: OK with these unchanged
+    /// leaves the object as it is.
+    start: (Formatted, Option<(usize, usize)>),
 }
 
 fn state_id() -> egui::Id {
@@ -73,16 +77,24 @@ fn color32(c: MTextColor) -> Color32 {
     Color32::from_rgb(rgb.0, rgb.1, rgb.2)
 }
 
-/// Show the editor while MTEXT collects its text; clears its state when it isn't running.
+/// Whether the running command asks for the text an in-place editor collects.
+pub(crate) fn asking_text(app: &CadApp) -> bool {
+    app.session.current_prompt().is_some_and(|p| p.accept.text && !p.accept.point)
+}
+
+/// The canvas an in-place editor sits on: its rectangle and pixels per drawing unit.
+pub(crate) fn canvas_frame(app: &CadApp, ctx: &egui::Context) -> (Rect, f64) {
+    app.canvas.xf.map_or((ctx.content_rect(), 20.0), |x| (x.rect, x.scale.max(1e-6)))
+}
+
+/// Show the editor while MTEXT or TEXTEDIT collects multiline text; clears its state otherwise.
 pub fn show(app: &mut CadApp, ctx: &egui::Context) {
-    let mtext = app.session.editing_mtext();
-    let asking = app.session.current_prompt().is_some_and(|p| p.accept.text && !p.accept.point);
-    let (Some(mt), true) = (mtext, asking) else {
+    let (Some(mt), true) = (app.session.editing_mtext(), asking_text(app)) else {
         ctx.data_mut(|d| d.remove::<State>(state_id()));
         return;
     };
     let t = Tokens::get();
-    let (rect, scale) = app.canvas.xf.map_or((ctx.content_rect(), 20.0), |x| (x.rect, x.scale.max(1e-6)));
+    let (rect, scale) = canvas_frame(app, ctx);
     let mut st = ctx.data_mut(|d| d.get_temp::<State>(state_id())).unwrap_or_else(|| {
         // TEXTEDIT opens the editor on an object's text; MTEXT on an empty box.
         let mut fmt = if mt.contents.is_empty() { Formatted::default() } else { Formatted::from_contents(&mt.contents) };
@@ -106,7 +118,8 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         }
         let caret = Some(fmt.len());
         let seen = fmt.text().to_string();
-        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret, focused: false, measured, value, seen }
+        let start = (fmt.clone(), value);
+        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret, focused: false, measured, value, seen, start }
     });
     let base_h = if mt.height > 0.0 { mt.height } else { 0.2 };
     let px = ((base_h * scale) as f32).clamp(MIN_PX, MAX_PX);
@@ -159,26 +172,47 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         }
         Done::Ok => {
             ctx.data_mut(|d| d.remove::<State>(state_id()));
-            // The editor holds the whole contents: one input, then Enter ends MTEXT's text entry.
-            // TEXTEDIT takes the text as it is, even emptied.
             let editing = app.session.running.as_ref().is_some_and(|r| r.id == "textedit");
+            let unchanged = (st.fmt.clone(), st.value) == st.start;
             // A dimension's measured value goes back as `<>`.
             if let Some((a, b)) = st.value {
                 let typing = st.fmt.fmt_at(a);
                 let text = measure::splice(st.fmt.text(), (a, b), "<>");
                 st.fmt.set_text(&text, &typing);
             }
-            if !st.fmt.is_empty() || editing {
-                let _ = app.session.input(cadcraft_engine::Input::Text(st.fmt.to_contents()));
+            // The editor holds the whole contents: one input, then Enter ends MTEXT's text entry.
+            // TEXTEDIT takes the text as it is, even emptied, and nothing when it is unchanged.
+            let input = if editing && unchanged {
+                Some(cadcraft_engine::Input::Enter)
+            } else if !st.fmt.is_empty() || editing {
+                Some(cadcraft_engine::Input::Text(st.fmt.to_contents()))
+            } else {
+                None
+            };
+            if let Some(i) = input {
+                feed(app, i);
             }
             if app.session.running.as_ref().is_some_and(|r| r.id == "mtext") {
-                let _ = app.session.input(cadcraft_engine::Input::Enter);
+                feed(app, cadcraft_engine::Input::Enter);
             }
         }
         Done::Cancel => {
             ctx.data_mut(|d| d.remove::<State>(state_id()));
-            app.session.cancel();
+            // TEXTEDIT leaves the object as it was and asks for the next one (as the one-line
+            // editor's Esc does); MTEXT ends.
+            if app.session.running.as_ref().is_some_and(|r| r.id == "textedit") {
+                feed(app, cadcraft_engine::Input::Enter);
+            } else {
+                app.session.cancel();
+            }
         }
+    }
+}
+
+/// Give the running command `i`, showing why it was refused (a locked layer, say).
+fn feed(app: &mut CadApp, i: cadcraft_engine::Input) {
+    if let Err(e) = app.session.input(i) {
+        app.session.echo(e.to_string());
     }
 }
 
@@ -314,12 +348,12 @@ fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64, width: f32) {
                 (Flag::Italic, RichText::new("I").italics(), crate::tl!("Italic")),
                 (Flag::Underline, RichText::new("U").underline(), crate::tl!("Underline")),
             ] {
-                if tool_text(ui, label, flag_of(&cur, flag)).on_hover_text(tip).clicked() {
+                if ui.selectable_label(flag_of(&cur, flag), label).on_hover_text(tip).clicked() {
                     toggle(st, flag);
                     refocus = true;
                 }
             }
-            if tool(ui, Glyph::Overline, flag_of(&cur, Flag::Overline)).on_hover_text(crate::tl!("Overline")).clicked() {
+            if icons::button(ui, Icon::TextOverline, TOOL, "Overline", flag_of(&cur, Flag::Overline)).clicked() {
                 toggle(st, Flag::Overline);
                 refocus = true;
             }
@@ -365,13 +399,13 @@ fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64, width: f32) {
         let para = st.fmt.para(st.fmt.paragraph_of(range.start));
         ui.horizontal(|ui| {
             for (al, glyph, tip) in [
-                (ParaAlign::Left, Glyph::AlignLeft, crate::tl!("Left")),
-                (ParaAlign::Center, Glyph::AlignCenter, crate::tl!("Center")),
-                (ParaAlign::Right, Glyph::AlignRight, crate::tl!("Right")),
-                (ParaAlign::Justify, Glyph::Justify, crate::tl!("Justify")),
+                (ParaAlign::Left, Icon::AlignLeft, "Left"),
+                (ParaAlign::Center, Icon::AlignCenter, "Center"),
+                (ParaAlign::Right, Icon::AlignRight, "Right"),
+                (ParaAlign::Justify, Icon::AlignJustify, "Justify"),
             ] {
                 let on = para.align == al;
-                if tool(ui, glyph, on).on_hover_text(tip).clicked() {
+                if icons::button(ui, glyph, TOOL, tip, on).clicked() {
                     st.fmt.edit_paras(range.clone(), |p| p.align = if on { ParaAlign::Default } else { al });
                     refocus = true;
                 }
@@ -380,25 +414,25 @@ fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64, width: f32) {
         ui.add_space(GAP);
         // Lists and special characters
         ui.horizontal(|ui| {
-            if tool(ui, Glyph::Bullets, false).on_hover_text(crate::tl!("Bulleted list")).clicked() {
+            if icons::button(ui, Icon::ListBullets, TOOL, "Bulleted list", false).clicked() {
                 st.fmt.make_list(range.clone(), ListStyle::Bullet, 3.0 * base_h);
                 refocus = true;
             }
-            if tool(ui, Glyph::Numbers, false).on_hover_text(crate::tl!("Numbered list")).clicked() {
+            if icons::button(ui, Icon::ListNumbers, TOOL, "Numbered list", false).clicked() {
                 st.fmt.make_list(range.clone(), ListStyle::Number, 3.0 * base_h);
                 refocus = true;
             }
-            if tool(ui, Glyph::Tab, false).on_hover_text(crate::tl!("Insert tab")).clicked() {
+            if icons::button(ui, Icon::InsertTab, TOOL, "Insert tab", false).clicked() {
                 insert(st, "\t");
                 refocus = true;
             }
             for (label, tip, code) in [("°", crate::tl!("Degree"), "°"), ("±", crate::tl!("Plus/minus"), "±")] {
-                if tool_text(ui, RichText::new(label), false).on_hover_text(tip).clicked() {
+                if ui.button(label).on_hover_text(tip).clicked() {
                     insert(st, code);
                     refocus = true;
                 }
             }
-            if tool(ui, Glyph::Diameter, false).on_hover_text(crate::tl!("Diameter")).clicked() {
+            if icons::button(ui, Icon::SymbolDiameter, TOOL, "Diameter", false).clicked() {
                 insert(st, "⌀");
                 refocus = true;
             }
@@ -413,91 +447,6 @@ fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64, width: f32) {
 const GAP: f32 = 6.0;
 /// Narrowest editor whose toolbar is one row.
 const ONE_ROW_WIDTH: f32 = 660.0;
-
-/// A toolbar picture drawn in code: the interface font has no glyph for some of these on every
-/// system (they showed as empty boxes on Windows).
-#[derive(Clone, Copy)]
-enum Glyph {
-    Overline,
-    AlignLeft,
-    AlignCenter,
-    AlignRight,
-    Justify,
-    Bullets,
-    Numbers,
-    Tab,
-    Diameter,
-}
-
-/// A toolbar button's frame: a square, highlighted when `on` or hovered.
-fn tool_frame(ui: &mut egui::Ui, on: bool) -> (egui::Response, Rect, Stroke) {
-    let resp = ui.allocate_response(vec2(TOOL, TOOL), Sense::click());
-    let v = ui.style().interact_selectable(&resp, on);
-    if on || resp.hovered() {
-        ui.painter().rect(resp.rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, egui::StrokeKind::Inside);
-    }
-    let r = resp.rect;
-    (resp, r, Stroke::new(1.4, v.fg_stroke.color))
-}
-
-/// A toolbar button showing `label`.
-fn tool_text(ui: &mut egui::Ui, label: RichText, on: bool) -> egui::Response {
-    let (resp, r, stroke) = tool_frame(ui, on);
-    let galley =
-        egui::WidgetText::from(label.color(stroke.color)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
-    ui.painter().galley(r.center() - galley.size() / 2.0, galley, stroke.color);
-    resp
-}
-
-/// A toolbar button showing `glyph`.
-fn tool(ui: &mut egui::Ui, glyph: Glyph, on: bool) -> egui::Response {
-    let (resp, r, stroke) = tool_frame(ui, on);
-    let p = ui.painter();
-    // A 14-point square in the middle: x, y from its top-left corner.
-    let o = r.center() - vec2(7.0, 7.0);
-    let at = |x: f32, y: f32| o + vec2(x, y);
-    let line = |a: (f32, f32), b: (f32, f32)| p.line_segment([at(a.0, a.1), at(b.0, b.1)], stroke);
-    // Four text lines, each (start, end) along x.
-    let rows = |spans: [(f32, f32); 4]| {
-        for (i, (a, b)) in spans.iter().enumerate() {
-            let y = 1.5 + i as f32 * 3.7;
-            line((*a, y), (*b, y));
-        }
-    };
-    match glyph {
-        Glyph::Overline => {
-            line((2.0, 1.0), (12.0, 1.0));
-            p.circle_stroke(at(7.0, 8.5), 4.5, stroke);
-        }
-        Glyph::AlignLeft => rows([(0.0, 14.0), (0.0, 9.0), (0.0, 14.0), (0.0, 7.0)]),
-        Glyph::AlignCenter => rows([(0.0, 14.0), (2.5, 11.5), (0.0, 14.0), (3.5, 10.5)]),
-        Glyph::AlignRight => rows([(0.0, 14.0), (5.0, 14.0), (0.0, 14.0), (7.0, 14.0)]),
-        Glyph::Justify => rows([(0.0, 14.0); 4]),
-        Glyph::Bullets | Glyph::Numbers => {
-            for i in 0..3 {
-                let y = 2.0 + i as f32 * 5.0;
-                line((5.0, y), (14.0, y));
-                if matches!(glyph, Glyph::Bullets) {
-                    p.circle_filled(at(1.5, y), 1.4, stroke.color);
-                } else {
-                    // Short strokes standing for 1, 2, 3.
-                    line((1.5, y - 1.8), (1.5, y + 1.8));
-                }
-            }
-        }
-        Glyph::Tab => {
-            line((0.0, 7.0), (11.0, 7.0));
-            line((7.0, 3.5), (11.0, 7.0));
-            line((7.0, 10.5), (11.0, 7.0));
-            line((13.5, 2.0), (13.5, 12.0));
-        }
-        Glyph::Diameter => {
-            p.circle_stroke(at(7.0, 7.0), 5.0, stroke);
-            line((1.0, 13.0), (13.0, 1.0));
-        }
-    }
-    resp
-}
 
 /// Insert `s` at the caret (over the selection).
 fn insert(st: &mut State, s: &str) {
@@ -589,7 +538,7 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
     let value = st.value;
     let default_color = t.text;
     // The measured value's background (AutoCAD shows it as a gray field).
-    let value_bg = Color32::from_rgba_unmultiplied(255, 255, 255, 46);
+    let value_bg = t.text.gamma_multiply(0.2);
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| -> Arc<egui::Galley> {
         let mut job = LayoutJob::default();
         job.wrap.max_width = wrap;

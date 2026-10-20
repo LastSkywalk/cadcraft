@@ -20,6 +20,8 @@
 
 use cadcraft_dxf::{Tag, Value};
 
+use crate::dxf_ext::owner;
+
 /// Most groups moved within one subclass.
 const MAX_RUN: usize = 64;
 
@@ -34,11 +36,7 @@ pub(crate) fn normalize(tags: &mut Vec<Tag>) {
     }
     let deps = dependencies(tags);
     let mut out = Vec::with_capacity(tags.len());
-    let mut i = 0;
-    while i < tags.len() {
-        // One record: from its `0` group to the next.
-        let end = (i + 1..tags.len()).find(|&k| tags.get(k).is_some_and(|t| t.code == 0)).unwrap_or(tags.len());
-        let rec = tags.get(i..end).unwrap_or(&[]);
+    for rec in records(tags) {
         let kind = rec.first().map(Tag::str).unwrap_or_default();
         if kind == "ACDBASSOCVARIABLE" {
             out.extend(variable(rec, &deps));
@@ -49,42 +47,29 @@ pub(crate) fn normalize(tags: &mut Vec<Tag>) {
         } else {
             out.extend_from_slice(rec);
         }
-        i = end;
     }
     *tags = out;
 }
 
-/// The owner of a record: its first 330 outside a `102 {…}` group.
-fn owner(rec: &[Tag]) -> Option<String> {
-    let mut inside = false;
-    for t in rec {
-        match t.code {
-            102 => inside = t.str().trim().starts_with('{'),
-            330 if !inside => return Some(t.str().trim().to_ascii_uppercase()),
-            _ => {}
-        }
-    }
-    None
+/// The records of a run of tags, each from its `0` group up to the next.
+fn records(tags: &[Tag]) -> impl Iterator<Item = &[Tag]> {
+    tags.chunk_by(|_, t| t.code != 0)
 }
 
 /// The associative dependencies of each owner (an associative variable): handles in file order.
 fn dependencies(tags: &[Tag]) -> std::collections::HashMap<String, Vec<String>> {
     let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    let mut i = 0;
-    while i < tags.len() {
-        let end = (i + 1..tags.len()).find(|&k| tags.get(k).is_some_and(|t| t.code == 0)).unwrap_or(tags.len());
-        let rec = tags.get(i..end).unwrap_or(&[]);
+    for rec in records(tags) {
         let kind = rec.first().map(Tag::str).unwrap_or_default();
         if kind.starts_with("ACDBASSOC")
             && kind.ends_with("DEPENDENCY")
             && let (Some(o), Some(h)) = (owner(rec), rec.iter().find(|t| t.code == 5).map(|t| t.str().trim().to_ascii_uppercase()))
         {
-            let list = out.entry(o).or_default();
+            let list = out.entry(o.trim().to_ascii_uppercase()).or_default();
             if list.len() < MAX_RUN {
                 list.push(h);
             }
         }
-        i = end;
     }
     out
 }

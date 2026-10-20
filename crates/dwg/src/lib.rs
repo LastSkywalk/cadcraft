@@ -49,6 +49,8 @@ fn mb(n: u64) -> String {
 mod assoc_dep;
 #[cfg(not(target_arch = "wasm32"))]
 mod props_table;
+#[cfg(not(target_arch = "wasm32"))]
+mod record;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {

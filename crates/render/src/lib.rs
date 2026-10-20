@@ -30,7 +30,10 @@ use cadcraft_doc::{Drawing, Entity, EntityKind, Handle, Lineweight, Prim, Space}
 use cadcraft_geom::{Bounds2, Mat3, Polyline, Vec2};
 use pen::Pen;
 
-pub use dim::{ArrowGeom, Arrowhead, DimGeometry, DimText, LineRole, arrowhead, dimension_geometry, dimension_geometry_with, format_linear_value};
+pub use dim::{
+    ArrowGeom, Arrowhead, DimGeometry, DimText, LineRole, arrowhead, dimension_geometry, dimension_geometry_with, format_linear_value,
+    override_contents,
+};
 pub use fill::triangulate_evenodd;
 pub use hatch::{fill_loops as hatch_fill_loops, pattern_swatch};
 pub use paper::{MAX_PLOT_OFFSET_MM, PAPER_SIZES, PaperSize, Sheet, paper_size, sheet};
@@ -292,6 +295,11 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// The layer an object on `layer` draws on: layer 0 inside a block is the block reference's.
+    fn effective_layer<'s>(&'s self, layer: &'s str) -> &'s str {
+        if layer == "0" { self.block_layer.as_deref().unwrap_or("0") } else { layer }
+    }
+
     /// A layer's colour, honouring the viewport's override.
     fn layer_color(&self, name: &str) -> Option<Color> {
         if let Some((_, c)) = self.vp_colors.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
@@ -927,7 +935,7 @@ pub fn build_entities<'a, I: IntoIterator<Item = &'a Entity>>(d: &Drawing, ents:
 /// The layer `e` is drawn on, as an index in the layer table: layer 0 inside a block is the
 /// block reference's layer.
 fn entity_layer(ctx: &Ctx, e: &Entity) -> u32 {
-    let name = if e.common.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { e.common.layer.as_str() };
+    let name = ctx.effective_layer(&e.common.layer);
     ctx.d.layers.iter().position(|l| l.name.eq_ignore_ascii_case(name)).and_then(|i| u32::try_from(i).ok()).unwrap_or(NO_LAYER)
 }
 
@@ -971,8 +979,7 @@ fn resolve(ctx: &Ctx, e: &Entity, plotting: bool) -> Resolved {
 /// [`resolve`] for an object's properties `c`.
 fn resolve_common(ctx: &Ctx, c: &cadcraft_doc::Common, plotting: bool) -> Resolved {
     let d = ctx.d;
-    // Layer "0" inside a block takes the insert's layer.
-    let layer_name = if c.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { c.layer.as_str() };
+    let layer_name = ctx.effective_layer(&c.layer);
     let layer = d.layer(layer_name);
     let visible =
         c.visible && layer.is_none_or(|l| l.visible() && (!plotting || l.plot)) && !ctx.frozen.iter().any(|f| f.eq_ignore_ascii_case(layer_name));
@@ -1391,7 +1398,7 @@ pub fn layout_mtext_entity(d: &Drawing, t: &cadcraft_doc::MText) -> cadcraft_fon
 }
 
 fn mtext_color(ctx: &Ctx, c: Option<cadcraft_fonts::MTextColor>, rgb: Ink, layer: &str) -> Ink {
-    let layer = if layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { layer };
+    let layer = ctx.effective_layer(layer);
     match c {
         Some(cadcraft_fonts::MTextColor::ByLayer) => ink(Color::ByLayer, ctx.layer_color(layer).unwrap_or(Color::Index(7)), ctx.block_color),
         Some(cadcraft_fonts::MTextColor::ByBlock) => ink(Color::ByBlock, Color::Index(7), ctx.block_color),
@@ -1451,7 +1458,7 @@ fn dimension(b: &mut Builder, ctx: &Ctx, e: &Entity, dm: &cadcraft_doc::Dimensio
     let style = d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides);
     let g = dimension_in(d, dm);
     // DIMCLRD / DIMCLRE / DIMCLRT: ByBlock = the dimension's own colour.
-    let layer_name = if e.common.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { e.common.layer.as_str() };
+    let layer_name = ctx.effective_layer(&e.common.layer);
     let layer_color = ctx.layer_color(layer_name).unwrap_or(Color::Index(7));
     let own = match e.common.color {
         Color::ByLayer => layer_color,
@@ -1534,27 +1541,27 @@ fn align(h: cadcraft_doc::HAlign, v: cadcraft_doc::VAlign) -> (cadcraft_fonts::A
 }
 
 fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3) -> Ctx<'a> {
-    let layer = if e.common.layer == "0" { ctx.block_layer.clone() } else { Some(e.common.layer.clone()) };
+    let layer = ctx.effective_layer(&e.common.layer);
     let color = match e.common.color {
         Color::ByBlock => ctx.block_color,
-        Color::ByLayer => ctx.layer_color(layer.as_deref().unwrap_or("0")).unwrap_or(Color::Index(7)),
+        Color::ByLayer => ctx.layer_color(layer).unwrap_or(Color::Index(7)),
         c => c,
     };
     let lw = match e.common.lineweight {
         Lineweight::ByBlock => ctx.block_lw,
-        Lineweight::ByLayer => ctx.d.layer(layer.as_deref().unwrap_or("0")).map(|l| l.lineweight).unwrap_or(Lineweight::Default),
+        Lineweight::ByLayer => ctx.d.layer(layer).map(|l| l.lineweight).unwrap_or(Lineweight::Default),
         x => x,
     };
     let lt = match e.common.linetype.to_ascii_lowercase().as_str() {
         "byblock" => ctx.block_ltype.clone(),
-        "bylayer" => ctx.d.layer(layer.as_deref().unwrap_or("0")).map(|l| l.linetype.clone()).unwrap_or_else(|| "Continuous".into()),
+        "bylayer" => ctx.d.layer(layer).map(|l| l.linetype.clone()).unwrap_or_else(|| "Continuous".into()),
         _ => e.common.linetype.clone(),
     };
     Ctx {
         d: ctx.d,
         xf: ctx.xf.then_before(m),
         block_color: color,
-        block_layer: layer,
+        block_layer: Some(layer.to_string()),
         block_lw: lw,
         block_ltype: lt,
         depth: ctx.depth + 1,

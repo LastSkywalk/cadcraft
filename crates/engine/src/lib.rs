@@ -13,6 +13,7 @@ pub mod audit;
 pub mod autosave;
 pub mod blockedit;
 pub mod cmd;
+pub mod config_dir;
 pub mod doc_path;
 mod finite;
 pub mod grip_dims;
@@ -373,6 +374,8 @@ pub struct Settings {
     /// DYNPROMPT: Dynamic Input shows the prompt beside the cursor, and Down Arrow opens the
     /// prompt's options there (on by default).
     pub dynprompt: bool,
+    /// LWDISPLAY of the active drawing, as [`Session::drafting_settings`] gives it; the drawing
+    /// keeps it ([`Session::lwdisplay`]).
     pub lwdisplay: bool,
     /// TRANSPARENCYDISPLAY: draw objects with their transparency on screen (on by default).
     pub transparency_display: bool,
@@ -810,10 +813,14 @@ impl Session {
         if let Ok(d) = self.doc() {
             settings.snapunit = d.header.snap_unit();
             settings.gridunit = d.header.grid_unit();
-            // LWDISPLAY is saved in the drawing: a file drawn with lineweights on shows them on.
-            settings.lwdisplay = d.header.i64("LWDISPLAY", 0) != 0;
         }
+        settings.lwdisplay = self.lwdisplay();
         settings
+    }
+    /// LWDISPLAY: lineweights shown. Saved in the drawing, as in AutoCAD: a file drawn with
+    /// lineweights on shows them on.
+    pub fn lwdisplay(&self) -> bool {
+        self.doc().is_ok_and(|d| d.header.i64("LWDISPLAY", 0) != 0)
     }
     /// The space commands act on (model space while working inside a layout viewport).
     pub fn space(&self) -> Space {

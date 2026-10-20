@@ -54,7 +54,7 @@ impl Styler {
         if !self.is_named() {
             return None;
         }
-        let layer_name = if c.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { c.layer.as_str() };
+        let layer_name = ctx.effective_layer(&c.layer);
         let by_name = |n: &str| self.table.styles.iter().position(|s| s.name.eq_ignore_ascii_case(n.trim()));
         let normal = || by_name(cadcraft_doc::NORMAL_STYLE);
         let p = c.plot_style.trim();

@@ -633,16 +633,16 @@ fn refill_hatches(b: &mut Block) {
 /// The value records of the references to the dynamic block whose record is `def_record` (from
 /// any one of them, by graph id): AutoCAD's layout of each record, class ids included.
 fn templates(d: &Drawing, def_record: Handle) -> HashMap<String, Vec<RawTag>> {
-    let objects: HashMap<Handle, &ForeignObject> = d.foreign.objects.iter().map(|o| (o.handle, o)).collect();
+    let objects = super::objects(d);
     let mut out: HashMap<String, Vec<RawTag>> = HashMap::new();
     for rep in d.foreign.objects.iter().filter(|o| o.kind.eq_ignore_ascii_case("DICTIONARY")) {
         // A representation dictionary whose data names this dynamic block.
-        let Some(rd) = entry(d, rep.handle, "AcDbRepData").and_then(|h| objects.get(&h)) else { continue };
+        let Some(rd) = super::entry(&objects, rep.handle, "AcDbRepData").and_then(|h| objects.get(&h)) else { continue };
         if !rd.tags.iter().any(|t| t.code == 340 && Handle::parse_hex(&t.value) == Some(def_record)) {
             continue;
         }
-        let Some(values) = entry(d, rep.handle, "AppDataCache").and_then(|c| entry(d, c, "ACAD_ENHANCEDBLOCKDATA")) else { continue };
-        for (k, h) in entries(d, values) {
+        let Some(values) = super::enhanced_data(&objects, rep.handle) else { continue };
+        for (k, h) in super::entries(&objects, values) {
             if let Some(x) = objects.get(&h).filter(|x| x.kind.eq_ignore_ascii_case("XRECORD")) {
                 out.entry(k).or_insert_with(|| x.tags.clone());
             }

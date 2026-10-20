@@ -1,7 +1,7 @@
 //! A dynamic block reference's attribute field follows a grip dragged with the mouse on the
 //! canvas (#1321): the DOOR reference's "W=36" attribute, read from the Width parameter, shows
-//! "W=30" once Width's arrow is moved 6 units left, as AutoCAD shows VetCAD's rebar lengths
-//! and positions after a grip edit. One undo step puts both back.
+//! "W=30" once Width's arrow is moved 6 units left, as AutoCAD updates attribute fields after a
+//! grip edit. One undo step puts both back.
 
 use cadcraft_engine::Session;
 use cadcraft_engine::doc::dynblock::{self, GripPart};
@@ -218,15 +218,4 @@ fn double_clicking_a_block_reference_edits_its_attributes() {
     let st = &h.state().eattedit;
     assert_eq!(st.block, "Door");
     assert_eq!(st.rows.get(st.current).map(|r| r.tag.as_str()), Some("WIDTH"));
-}
-
-#[test]
-fn double_clicking_a_dimension_edits_its_text() {
-    let mut h = harness();
-    h.state_mut().session.execute("dimlinear", &json!({"p1": [100, 10], "p2": [130, 10], "at": [115, 25]})).unwrap();
-    h.state_mut().session.set_selection(Vec::new());
-    h.run_steps(3);
-    let at = screen(&h, Vec2::new(115.0, 25.0));
-    double_click(&mut h, at);
-    assert_eq!(running(&h).as_deref(), Some("textedit"), "log: {:?}", h.state().session.log);
 }

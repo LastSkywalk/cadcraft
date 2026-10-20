@@ -28,10 +28,20 @@ pub struct State {
     preview: Option<((u64, u64, String), Arc<DisplayList>)>,
 }
 
-/// The blocks the dialog offers: named blocks that aren't external references, sorted by name.
+/// Whether the dialog offers block `b`: a named block that isn't an external reference.
+pub fn editable(b: &cadcraft_engine::doc::Block) -> bool {
+    !b.anonymous && !b.name.starts_with('*') && b.xref_path.is_none()
+}
+
+/// The name of the block reference `h` (to block `block`) is shown and edited under: a dynamic
+/// block's own name rather than its anonymous variant's.
+pub fn definition_name(d: &Drawing, h: cadcraft_engine::doc::Handle, block: &str) -> String {
+    cadcraft_engine::doc::dynblock::reference(d, h).map_or_else(|| block.to_string(), |r| r.definition)
+}
+
+/// The blocks the dialog offers ([`editable`]), sorted by name.
 pub fn editable_blocks(d: &Drawing) -> Vec<String> {
-    let mut names: Vec<String> =
-        d.blocks.values().filter(|b| !b.anonymous && !b.name.starts_with('*') && b.xref_path.is_none()).map(|b| b.name.clone()).collect();
+    let mut names: Vec<String> = d.blocks.values().filter(|b| editable(b)).map(|b| b.name.clone()).collect();
     names.sort_by_key(|n| n.to_lowercase());
     // The drawing itself comes first, as in AutoCAD.
     names.insert(0, CURRENT_DRAWING.to_string());
@@ -108,8 +118,13 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
     Some(Ok(Value::Null))
 }
 
-/// Open the dialog with block `name` chosen (a double-click on a reference to it).
+/// Open the dialog with block `name` chosen (a double-click on a reference to it); in the Block
+/// Editor already, BEDIT says why it can't.
 pub fn open_on(app: &mut CadApp, name: String) {
+    if app.session.state().is_ok_and(|st| st.block_edit.is_some()) {
+        let _ = app.run("bedit", json!({ "name": name }));
+        return;
+    }
     app.bedit = State { name, ..State::default() };
     app.ui.dialog = Some("bedit".into());
 }

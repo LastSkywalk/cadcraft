@@ -67,6 +67,10 @@ impl Header {
     pub fn i64(&self, name: &str, default: i64) -> i64 {
         self.get(name).and_then(HVal::as_i64).unwrap_or(default)
     }
+    /// The decimals lengths show with: LUPREC, 4 when unset, kept to 0..=8.
+    pub fn length_precision(&self) -> usize {
+        usize::try_from(self.i64("LUPREC", 4).clamp(0, 8)).unwrap_or(4)
+    }
     pub fn str(&self, name: &str, default: &str) -> String {
         self.get(name).and_then(HVal::as_str).map(str::to_string).unwrap_or_else(|| default.to_string())
     }

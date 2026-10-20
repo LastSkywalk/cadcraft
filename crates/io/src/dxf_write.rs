@@ -12,6 +12,7 @@ use cadcraft_geom::{Bounds2, Vec2, Vec3};
 
 use crate::dxf_ext::{self, DimVal, K};
 
+#[derive(Default)]
 struct W {
     t: Vec<Tag>,
     next: u64,
@@ -51,6 +52,18 @@ impl W {
         let h = format!("{:X}", self.next);
         self.next = self.next.saturating_add(1);
         h
+    }
+    /// Text over several string groups: every 250 characters but the last in `more`, the last
+    /// in 1 (`1 ""` for no text).
+    fn long_text(&mut self, more: i32, text: &str) {
+        let groups = cadcraft_dxf::string_groups(text);
+        let n = groups.len();
+        for (i, g) in groups.into_iter().enumerate() {
+            self.s(if i + 1 == n { 1 } else { more }, g);
+        }
+        if n == 0 {
+            self.s(1, "");
+        }
     }
     /// A `102 {NAME` … `102 }` group of handles.
     fn group(&mut self, name: &str, code: i32, handles: &[&str]) {
@@ -208,15 +221,7 @@ fn annotative_xdata(w: &mut W) {
 
 /// Override (`ACAD` DSTYLE) and associativity (`CADCRAFT` ASSOC) xdata of a dimension.
 fn dim_xdata(w: &mut W, dm: &Dimension, cx: &Ctx) {
-    let mut ov = W {
-        t: Vec::new(),
-        next: 0,
-        pstyles: HashMap::new(),
-        layers: HashMap::new(),
-        reactors: HashMap::new(),
-        fields: Vec::new(),
-        field_handles: Vec::new(),
-    };
+    let mut ov = W::default();
     let mut sah = false;
     for (k, v) in &dm.overrides {
         let Some(field) = DimStyle::field_name(k) else { continue };
@@ -495,15 +500,7 @@ fn multiline_tags(w: &mut W, a: &Attrib, attdef: bool) {
     w.f(46, 0.0);
     w.i(71, i64::from(m.attach));
     w.i(72, 5);
-    let chars: Vec<char> = crate::dxf_read::mtext_dxf::encode_contents(&m.contents).chars().collect();
-    let chunks: Vec<String> = chars.chunks(250).map(|c| c.iter().collect()).collect();
-    let n = chunks.len();
-    for (i, c) in chunks.iter().enumerate() {
-        w.s(if i + 1 == n { 1 } else { 3 }, c.clone());
-    }
-    if n == 0 {
-        w.s(1, "");
-    }
+    w.long_text(3, &crate::dxf_read::mtext_dxf::encode_contents(&m.contents));
     w.s(7, &m.style);
     if m.rotation != 0.0 {
         w.p(11, Vec3::new(m.rotation.cos(), m.rotation.sin(), 0.0));
@@ -518,20 +515,8 @@ fn multiline_tags(w: &mut W, a: &Attrib, attdef: bool) {
 fn attrib_field(w: &mut W, f: &cadcraft_doc::field::Field, attrib: &str, host: &str) {
     let (xdict, fields) = (w.h(), w.h());
     w.group("ACAD_XDICTIONARY", 360, &[xdict.as_str()]);
-    let mut n = w.next;
     let mut recs = Vec::new();
-    let root = crate::dxf_field::field_records(
-        f,
-        &fields,
-        host,
-        &mut || {
-            let h = format!("{n:X}");
-            n = n.saturating_add(1);
-            h
-        },
-        &mut recs,
-    );
-    w.next = n;
+    let root = crate::dxf_field::field_records(f, &fields, host, &mut || w.h(), &mut recs);
     w.fields.extend([
         Tag::s(0, "DICTIONARY"),
         Tag::s(5, xdict.clone()),
@@ -887,16 +872,8 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
             w.f(41, t.width);
             w.i(71, i64::from(t.attach));
             w.i(72, 1);
-            // Long contents go in 250-char 3-chunks, the remainder in 1.
-            let chars: Vec<char> = crate::dxf_read::mtext_dxf::encode_contents(&t.contents).chars().collect();
-            let chunks: Vec<String> = chars.chunks(250).map(|c| c.iter().collect()).collect();
-            let n = chunks.len();
-            for (i, c) in chunks.iter().enumerate() {
-                w.s(if i + 1 == n { 1 } else { 3 }, c.clone());
-            }
-            if n == 0 {
-                w.s(1, "");
-            }
+            // Long contents go in 250-character 3 groups, the remainder in 1.
+            w.long_text(3, &crate::dxf_read::mtext_dxf::encode_contents(&t.contents));
             w.s(7, &t.style);
             if t.rotation != 0.0 {
                 w.f(50, t.rotation.to_degrees());
@@ -1078,15 +1055,7 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                         w.f(140, h);
                     }
                     // Long text: 250-character code-2 chunks, the rest in code 1.
-                    let chars: Vec<char> = cell.map(|x| x.text.chars().collect()).unwrap_or_default();
-                    let chunks: Vec<String> = chars.chunks(250).map(|c| c.iter().collect()).collect();
-                    let n = chunks.len();
-                    for (i, ch) in chunks.into_iter().enumerate() {
-                        w.s(if i + 1 == n { 1 } else { 2 }, ch);
-                    }
-                    if n == 0 {
-                        w.s(1, "");
-                    }
+                    w.long_text(2, cell.map_or("", |x| x.text.as_str()));
                 }
             }
             w.s(1001, dxf_ext::APP);
@@ -1806,15 +1775,7 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     let committed = d.committed();
     let d: &Drawing = &committed;
     // Structural handles start above every entity handle.
-    let mut w = W {
-        t: Vec::new(),
-        next: d.handseed.max(0x100).saturating_add(0x1000),
-        pstyles: HashMap::new(),
-        layers: HashMap::new(),
-        reactors: hatch_reactors(d),
-        fields: Vec::new(),
-        field_handles: Vec::new(),
-    };
+    let mut w = W { next: d.handseed.max(0x100).saturating_add(0x1000), reactors: hatch_reactors(d), ..W::default() };
     // Pre-allocate handles for block records.
     let mut paper_layouts: Vec<&Layout> = d.layouts.iter().collect();
     paper_layouts.sort_by_key(|l| l.tab_order);
@@ -2285,15 +2246,7 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
         w.i(70, 0);
         let v = serde_json::to_value(s).unwrap_or_default();
         let defaults = serde_json::to_value(DimStyle::default()).unwrap_or_default();
-        let mut newer = W {
-            t: Vec::new(),
-            next: 0,
-            pstyles: HashMap::new(),
-            layers: HashMap::new(),
-            reactors: HashMap::new(),
-            fields: Vec::new(),
-            field_handles: Vec::new(),
-        };
+        let mut newer = W::default();
         for (field, code, kind) in dxf_ext::DIM_CODES {
             let Some(enc) = v.get(*field).and_then(|x| cx.encode(*kind, x)) else { continue };
             // DIMPOST is written even when empty: a reader that defaults a missing one to "<>"
@@ -2939,15 +2892,7 @@ fn cadcraft_fonts_name() -> &'static str {
 /// VERTEXes, gives its first). Handles of objects outside the entity (owner, styles) are left
 /// out. AutoLISP's `entget` is built on it.
 pub fn entity_groups(d: &Drawing, e: &Entity) -> (String, Vec<Tag>) {
-    let mut w = W {
-        t: Vec::new(),
-        next: d.handseed.max(0x100).saturating_add(0x1000),
-        pstyles: HashMap::new(),
-        layers: HashMap::new(),
-        reactors: HashMap::new(),
-        fields: Vec::new(),
-        field_handles: Vec::new(),
-    };
+    let mut w = W { next: d.handseed.max(0x100).saturating_add(0x1000), ..W::default() };
     let cx = Ctx { target: Version::R2018, ..Ctx::default() };
     let paper = d.space_of(e.handle).is_some_and(|s| !matches!(s, cadcraft_doc::Space::Model));
     entity(&mut w, d, e, "0", paper, &cx);

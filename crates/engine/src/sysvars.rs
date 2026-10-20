@@ -103,7 +103,7 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
         "DYNPIFORMAT" => json!(i32::from(st.dynpi_cartesian)),
         "DYNPICOORDS" => json!(i32::from(st.dynpi_absolute)),
         "DYNPROMPT" => json!(i32::from(st.dynprompt)),
-        "LWDISPLAY" => json!(i32::from(s.drafting_settings().lwdisplay)),
+        "LWDISPLAY" => json!(i32::from(s.lwdisplay())),
         "PLOTTRANSPARENCYOVERRIDE" => json!(st.plot_transparency_override),
         // Negative while turned off, so the toggle keeps the display it turns back on.
         "SELECTIONCYCLING" => {

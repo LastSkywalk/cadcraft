@@ -1680,7 +1680,7 @@ pub fn read(bytes: &[u8]) -> Result<Drawing> {
     let mut blocks: Vec<(String, Vec3, String, Vec<(Option<String>, bool, Entity)>, i64)> = Vec::new();
     let mut layout_objs: Vec<(String, u32, String, PageSetup)> = Vec::new();
     let mut entities = Vec::new();
-    let mut objs = Objects { xdicts: xdicts(&secs), ..Objects::default() };
+    let mut objs = Objects::default();
     // Every handle another program's file already uses is taken before anything gets a new one:
     // its $HANDSEED can be lower than its handles, and entities made while reading (the faces of
     // a polyface mesh) would otherwise get handles that records further on still have. A file
@@ -1700,6 +1700,7 @@ pub fn read(bytes: &[u8]) -> Result<Drawing> {
             "TABLES" => tables(&s.tags, &mut d, &mut rx),
             "BLOCKS" => {
                 let recs = records(&s.tags);
+                objs.add_xdicts(&recs);
                 for (k, tg) in &recs {
                     let t = T(tg);
                     if k == "BLOCK" && t.i(70).unwrap_or(0) & 4 != 0 {
@@ -1737,7 +1738,9 @@ pub fn read(bytes: &[u8]) -> Result<Drawing> {
             // A damaged file may split its entities over several ENTITIES sections (#865).
             "ENTITIES" => {
                 let mut n = 0;
-                entities.extend(parse_entities(&records(&s.tags), &mut d, &mut rx, &mut n));
+                let recs = records(&s.tags);
+                objs.add_xdicts(&recs);
+                entities.extend(parse_entities(&recs, &mut d, &mut rx, &mut n));
                 count_skipped(&mut skipped, "ENTITIES", n);
             }
             "OBJECTS" => {
@@ -1930,28 +1933,13 @@ fn apply_sortents(
     }
 }
 
-/// Non-graphical objects applied once every entity is placed.
 /// The extension dictionary handle of a record: the handle after `102 {ACAD_XDICTIONARY`.
-fn xdict_handle(tags: &[Tag]) -> Option<String> {
+pub(crate) fn xdict_handle(tags: &[Tag]) -> Option<String> {
     let i = tags.iter().position(|t| t.code == 102 && t.str().trim() == "{ACAD_XDICTIONARY")?;
     tags.get(i + 1..).unwrap_or(&[]).iter().find(|t| t.code == 360).map(|t| t.str().trim().to_ascii_uppercase())
 }
 
-/// Entity extension dictionaries, by object handle. AutoCAD hangs an annotative object's scale
-/// contexts there ([`Objects::native_anno`]); other extension dictionaries are kept raw.
-fn xdicts(secs: &[cadcraft_dxf::Section]) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for tags in secs.iter().filter(|s| matches!(s.name.as_str(), "ENTITIES" | "BLOCKS")).map(|s| &s.tags) {
-        for (_, rec) in records(tags) {
-            let (Some(handle), Some(dict)) = (T(&rec).s(5), xdict_handle(&rec)) else { continue };
-            if out.len() < MAX_OBJECTS {
-                out.insert(handle.trim().to_ascii_uppercase(), dict);
-            }
-        }
-    }
-    out
-}
-
+/// Non-graphical objects applied once every entity is placed.
 #[derive(Default)]
 struct Objects {
     /// Dictionary entry handle (upper case) → entry name.
@@ -2046,6 +2034,18 @@ impl Objects {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Note the extension dictionaries of the records of an ENTITIES or BLOCKS section, by
+    /// object handle. AutoCAD hangs an annotative object's scale contexts there
+    /// ([`Objects::native_anno`]); other extension dictionaries are kept raw.
+    fn add_xdicts(&mut self, recs: &[(String, Vec<Tag>)]) {
+        for (_, rec) in recs {
+            let (Some(handle), Some(dict)) = (T(rec).s(5), xdict_handle(rec)) else { continue };
+            if self.xdicts.len() < MAX_OBJECTS {
+                self.xdicts.insert(handle.trim().to_ascii_uppercase(), dict);
+            }
         }
     }
 
@@ -2325,7 +2325,7 @@ fn page_setup(t: &T) -> PageSetup {
     // negative (the plot moved left/down), so it takes a signed range.
     let mm_signed = |code: i32, d: f64| {
         let v = t.fd(code, d);
-        if v.is_finite() && v.abs() <= 100_000.0 { v } else { d }
+        if v.is_finite() && v.abs() <= cadcraft_doc::MAX_PLOT_OFFSET_MM { v } else { d }
     };
     p.plot_origin_mm = [mm_signed(46, 0.0), mm_signed(47, 0.0)];
     // Plot rotation 1 or 3 turns the media a quarter turn; media defined wider than tall is

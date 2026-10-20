@@ -168,15 +168,16 @@ Linux and the BSDs `/usr/share/fonts`, `/usr/local/share/fonts`, `~/.local/share
 by file name (`Vazirmatn-Regular.ttf`) or family name (`Vazirmatn`), or inline in MTEXT with
 `\fVazirmatn;`. Restart CADCraft after installing a font: the font folders are scanned once.
 
-CADCraft also has font folders of its own, which it looks in **before** the system's:
-`CADCRAFT_FONTPATH` (a list of folders in the platform's path separator, e.g.
-`CADCRAFT_FONTPATH="$HOME/fonts:/opt/work-fonts"`), and the `fonts` folder beside its settings
-file (`~/.config/cadcraft/fonts`, `$XDG_CONFIG_HOME/cadcraft/fonts`, macOS
-`~/Library/Application Support/CADCraft/fonts`, Windows `%APPDATA%\CADCraft\fonts`, or under
-`CADCRAFT_CONFIG_DIR`). A font AutoCAD has but this machine hasn't — ISOCPEUR on macOS, say — can
-be dropped there under that name and every text style asking for it finds it. CADCraft reads
-TrueType/OpenType files only; an Autodesk `.shx` file is not one, so supply a substitute and,
-if the drawing's styles name the `.shx`, point `FONTALT` at it.
+CADCraft also has font folders of its own, which it looks in **before** the system's (and before
+the fonts built into it): the folders in `CADCRAFT_FONTPATH` (a list in the platform's path
+separator, earlier folders first, e.g. `CADCRAFT_FONTPATH="$HOME/fonts:/opt/fonts"`), then the
+`fonts` folder in its settings directory (`$XDG_CONFIG_HOME/cadcraft/fonts` or
+`~/.config/cadcraft/fonts` on Linux and the BSDs, macOS
+`~/Library/Application Support/CADCraft/fonts`, Windows `%APPDATA%\CADCraft\fonts`, or
+`$CADCRAFT_CONFIG_DIR/fonts`). A font a drawing names that this machine doesn't have can be
+put there under that name, and every text style asking for it finds it. CADCraft reads
+TrueType/OpenType files only; an `.shx` file is not one, so supply a substitute and, if the
+drawing's styles name the `.shx`, point `FONTALT` at it.
 
 **Right-to-left text (Persian, Arabic, Urdu, Hebrew).** TEXT and MTEXT lines are laid out with the
 Unicode Bidirectional Algorithm (the paragraph direction comes from its first letter, so numbers

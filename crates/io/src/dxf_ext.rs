@@ -659,8 +659,7 @@ fn json_chunks(json: &str) -> Vec<String> {
             safe.push(c);
         }
     }
-    let chars: Vec<char> = safe.chars().collect();
-    chars.chunks(250).map(|c| c.iter().collect()).collect()
+    cadcraft_dxf::string_groups(&safe)
 }
 
 /// An associative array's parameters as CADCraft xdata on its block record: `1000 ARRAY`,

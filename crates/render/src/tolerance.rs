@@ -32,7 +32,7 @@ pub fn gdt_points(p: &GdtPrim, tol: f64) -> Vec<Vec2> {
 pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, e: &Entity, t: &Tolerance, lw: f32, tol: f64) {
     let d = ctx.d;
     let st = d.dim_style(&t.style).cloned().unwrap_or_default();
-    let layer_name = if e.common.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { e.common.layer.as_str() };
+    let layer_name = ctx.effective_layer(&e.common.layer);
     let layer_color = ctx.layer_color(layer_name).unwrap_or(Color::Index(7));
     let own = match e.common.color {
         Color::ByLayer => layer_color,

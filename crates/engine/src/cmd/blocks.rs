@@ -458,16 +458,25 @@ fn run_reference_set(s: &mut Session, p: &Value) -> Result<Value> {
 fn run_updatefield(s: &mut Session, p: &Value) -> Result<Value> {
     let given = p.get("handles").is_some_and(|v| !v.is_null()) || p.get("handle").is_some_and(|v| !v.is_null());
     let hs = if given { Some(targets(s, p)?) } else { None };
-    let mut d = s.doc()?.clone();
-    let n = match &hs {
-        Some(hs) => hs.iter().filter(|h| cadcraft_doc::field::update_insert(&mut d, **h)).count(),
-        None => cadcraft_doc::field::update_all(&mut d),
-    };
-    if n > 0 {
-        *s.doc_mut()? = d;
-    }
-    let n = n + super::table::recalc(s, hs)?;
+    let n = update_fields(s, hs)?;
     Ok(json!({ "updated": n, "message": format!("{n} field(s) updated.") }))
+}
+
+/// Evaluate fields again (UPDATEFIELD, REGEN): the attributes' fields of the block references
+/// `hs`, or of every one, and the formulas of those tables; how many changed.
+pub(crate) fn update_fields(s: &mut Session, hs: Option<Vec<Handle>>) -> Result<usize> {
+    let mut n = 0;
+    if hs.is_some() || s.doc().is_ok_and(cadcraft_doc::field::needs_update) {
+        let mut d = s.doc()?.clone();
+        n = match &hs {
+            Some(hs) => cadcraft_doc::field::update_inserts(&mut d, hs),
+            None => cadcraft_doc::field::update_all(&mut d),
+        };
+        if n > 0 {
+            *s.doc_mut()? = d;
+        }
+    }
+    Ok(n + super::table::recalc(s, hs)?)
 }
 
 // ---------------- interactive ----------------

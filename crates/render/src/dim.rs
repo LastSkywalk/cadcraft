@@ -417,14 +417,22 @@ fn post(template: &str, meas: &str) -> String {
     if template.contains("<>") { template.replace("<>", meas) } else { format!("{meas}{template}") }
 }
 
-fn apply_override(base: &str, d: &Dimension) -> String {
-    if d.text.is_empty() {
-        base.to_string()
-    } else if d.text.trim().is_empty() {
+/// A dimension's text override as an editor shows it: no override is `<>` (the measurement
+/// alone), one of only spaces is empty (the text hidden), and any other is the text as it is,
+/// where `<>` stands for the measurement.
+pub fn override_contents(text: &str) -> String {
+    if text.is_empty() {
+        "<>".into()
+    } else if text.trim().is_empty() {
         String::new()
     } else {
-        d.text.replace("<>", base)
+        text.to_string()
     }
+}
+
+/// The text dimension `d` shows for measurement `base`: its override with the measurement in it.
+fn apply_override(base: &str, d: &Dimension) -> String {
+    override_contents(&d.text).replace("<>", base)
 }
 
 fn ext_line(origin: Vec2, foot: Vec2, st: &DimStyle, k: f64) -> Option<Vec<Vec2>> {
@@ -990,6 +998,19 @@ fn decode_value(s: &str) -> String {
 mod tests {
     use super::*;
     use cadcraft_geom::Vec3;
+
+    #[test]
+    fn override_contents_as_an_editor_shows_them() {
+        assert_eq!(override_contents(""), "<>");
+        assert_eq!(override_contents("  "), "");
+        assert_eq!(override_contents("<> TYP"), "<> TYP");
+        assert_eq!(override_contents("CL"), "CL");
+        let mut d = lin((0.0, 0.0), (10.0, 0.0), (5.0, 5.0), 0.0);
+        for (text, shown) in [("", "10"), (" ", ""), ("<> TYP", "10 TYP"), ("CL", "CL")] {
+            d.text = text.into();
+            assert_eq!(apply_override("10", &d), shown, "{text:?}");
+        }
+    }
 
     fn lin(p1: (f64, f64), p2: (f64, f64), on: (f64, f64), rot: f64) -> Dimension {
         Dimension {

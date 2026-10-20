@@ -10,8 +10,11 @@
 //! distance of parameter 39 of the block reference the attribute is on, in decimal units with no
 //! decimals (DXF Reference, FIELD).
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
+use crate::dynblock::Reader;
 use crate::{Attrib, Drawing, EntityKind, Handle, RawTag};
 
 /// Deepest field tree evaluated.
@@ -36,15 +39,19 @@ pub struct Field {
     /// The objects the code reads, by `_ObjIdx`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<FieldObject>,
-    /// The groups between the object references and the value, as read (evaluation flags and
-    /// the evaluator's own data). A reference to the object the field is on is [`HOST`].
+    /// The file groups between the object references and the value (evaluation flags and the
+    /// evaluator's own data), as read. CADCraft doesn't interpret them; they are written back as
+    /// they are, so a saved field is the field that was read and evaluates the same in other
+    /// programs. A handle in them of the object the field is on is [`HOST`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub data: Vec<RawTag>,
     #[serde(default)]
     pub value: FieldValue,
 }
 
-/// The handle a field's data uses for the object the field is on, whatever handle that has.
+/// The handle [`Field::data`] has for the object the field is on: that object's handle changes
+/// when it is copied or saved, so the data names it by this and a save writes the handle it has
+/// then.
 pub const HOST: &str = "*HOST";
 
 /// An object a field reads.
@@ -124,19 +131,19 @@ impl Field {
     /// Evaluate the field again on the object `host` it is on; whether its value changed. Each
     /// child is evaluated first; a field CADCraft can't evaluate keeps its value.
     pub fn update(&mut self, d: &Drawing, host: Handle) -> bool {
-        self.update_at(d, host, 0)
+        self.update_at(&mut Reader::new(d), host, 0)
     }
 
-    fn update_at(&mut self, d: &Drawing, host: Handle, depth: usize) -> bool {
+    fn update_at(&mut self, r: &mut Reader, host: Handle, depth: usize) -> bool {
         if depth >= MAX_FIELD_DEPTH {
             return false;
         }
         let mut changed = false;
         for c in self.children.iter_mut().take(MAX_FIELD_CHILDREN) {
-            changed |= c.update_at(d, host, depth + 1);
+            changed |= c.update_at(r, host, depth + 1);
         }
-        let Some(v) = self.evaluate(d, host) else { return changed };
-        let value = self.make_value(d, v);
+        let Some(v) = self.evaluate(r, host) else { return changed };
+        let value = self.make_value(r.drawing(), v);
         if value != self.value {
             self.value = value;
             changed = true;
@@ -145,7 +152,7 @@ impl Field {
     }
 
     /// The value this field's evaluator gives, from its children's values.
-    fn evaluate(&self, d: &Drawing, host: Handle) -> Option<Val> {
+    fn evaluate(&self, r: &mut Reader, host: Handle) -> Option<Val> {
         let ev = self.evaluator.to_ascii_lowercase();
         if ev == "_text" {
             return Some(Val::Text(self.join()));
@@ -157,7 +164,7 @@ impl Field {
             return expression(&expr).map(Val::Num);
         }
         if ev.starts_with("acobjprop") {
-            return self.object_property(d, host);
+            return self.object_property(r, host);
         }
         None
     }
@@ -202,7 +209,7 @@ impl Field {
     /// An `AcObjProp` field's value: a property of the object it reads. CADCraft reads the
     /// parameters of a dynamic block reference (`Parameter(N).UpdatedDistance`, `.UserVariable`,
     /// `.VisibilityState`, `.LookupString`).
-    fn object_property(&self, d: &Drawing, host: Handle) -> Option<Val> {
+    fn object_property(&self, r: &mut Reader, host: Handle) -> Option<Val> {
         let body = self.body();
         let at = body.find("Object(")?;
         let rest = body.get(at + 7..)?;
@@ -218,12 +225,12 @@ impl Field {
         let path = rest.get(close + 1..)?.trim().trim_start_matches('.');
         let Some(param) = path.strip_prefix("Parameter(") else {
             let property = path.split_whitespace().next()?;
-            return curve_length(d, host, object, property).map(Val::Num);
+            return curve_length(r, host, object, property).map(Val::Num);
         };
         let close = param.find(')')?;
         let node = param.get(..close)?.trim().parse::<i32>().ok()?;
         let property = param.get(close + 1..)?.trim().trim_start_matches('.').split_whitespace().next()?;
-        match crate::dynblock::parameter_value(d, object, node, property)? {
+        match r.parameter_value(object, node, property)? {
             crate::dynblock::ParamValue::Number(v) => Some(Val::Num(v)),
             crate::dynblock::ParamValue::Text(t) => Some(Val::Text(t)),
         }
@@ -279,16 +286,17 @@ pub fn format_text(text: &str, format: &str) -> String {
 /// polyline's length. An object of a block definition is read in block reference `host`, the
 /// way AutoCAD reads a dynamic block's own geometry for its attributes (`Object(…,1)`): the
 /// entity at the same place in the block the reference shows, scaled with it.
-fn curve_length(d: &Drawing, host: Handle, object: Handle, property: &str) -> Option<f64> {
+fn curve_length(r: &mut Reader, host: Handle, object: Handle, property: &str) -> Option<f64> {
     let p = property.to_ascii_lowercase();
     if p != "length" && p != "arclength" {
         return None;
     }
+    let d = r.drawing();
     let (kind, scale) = match d.entity(object) {
-        Some(e) => (e.kind.clone(), 1.0),
+        Some(e) => (&e.kind, 1.0),
         None => {
             let EntityKind::Insert(ins) = &d.entity(host)?.kind else { return None };
-            let definition = crate::dynblock::reference(d, host).map_or_else(|| ins.block.clone(), |r| r.definition);
+            let definition = r.reference(host).map_or_else(|| ins.block.clone(), |r| r.definition.clone());
             let at = d.block(&definition)?.entities.iter().position(|e| e.handle == object)?;
             let e = d.block(&ins.block)?.entities.iter().nth(at)?;
             // Uniform scale only: a length has no single scale otherwise.
@@ -296,10 +304,10 @@ fn curve_length(d: &Drawing, host: Handle, object: Handle, property: &str) -> Op
             if (sx - sy).abs() > 1e-9 * sx.max(sy).max(1.0) {
                 return None;
             }
-            (e.kind.clone(), sx)
+            (&e.kind, sx)
         }
     };
-    let len = match &kind {
+    let len = match kind {
         EntityKind::Line(l) if p == "length" => (l.b - l.a).len(),
         EntityKind::Arc(a) => {
             let sweep = (a.end - a.start).rem_euclid(std::f64::consts::TAU);
@@ -330,7 +338,7 @@ fn curve_length(d: &Drawing, host: Handle, object: Handle, property: &str) -> Op
 /// fall back to it), `%pr` decimals (else LUPREC), `%zs8` no trailing zeros, `%ds` decimal
 /// separator, `%ct8[f]` a conversion factor and `%ps[prefix,suffix]`.
 pub fn format_number(d: &Drawing, v: f64, format: &str) -> String {
-    let mut prec = usize::try_from(d.header.i64("LUPREC", 4).clamp(0, 8)).unwrap_or(4);
+    let mut prec = d.header.length_precision();
     let mut trailing = true;
     let mut sep = '.';
     let mut factor = 1.0;
@@ -535,10 +543,14 @@ impl Parser<'_> {
 /// Evaluate the fields of `attribs`, the attributes of block reference `host`, and put each
 /// one's value in its text; the number of attributes whose text changed.
 pub fn update_attribs(d: &Drawing, host: Handle, attribs: &mut [Attrib]) -> usize {
+    evaluate_attribs(&mut Reader::new(d), host, attribs)
+}
+
+fn evaluate_attribs(r: &mut Reader, host: Handle, attribs: &mut [Attrib]) -> usize {
     let mut n = 0;
     for a in attribs.iter_mut() {
         let Some(f) = a.field.as_mut() else { continue };
-        f.update(d, host);
+        f.update_at(r, host, 0);
         if f.value == FieldValue::None {
             continue;
         }
@@ -553,24 +565,45 @@ pub fn update_attribs(d: &Drawing, host: Handle, attribs: &mut [Attrib]) -> usiz
 /// Evaluate the fields of block reference `insert`'s attributes again; whether an attribute's
 /// text changed.
 pub fn update_insert(d: &mut Drawing, insert: Handle) -> bool {
-    let Some(e) = d.entity(insert) else { return false };
-    let EntityKind::Insert(ins) = &e.kind else { return false };
-    if !ins.attribs.iter().any(|a| a.field.is_some()) {
-        return false;
-    }
-    let mut attribs = ins.attribs.clone();
-    let before = attribs.clone();
-    let n = update_attribs(d, insert, &mut attribs);
-    if attribs == before {
-        return false;
-    }
-    d.modify_entity(insert, |e| {
-        if let EntityKind::Insert(i) = &mut e.kind {
-            i.attribs = attribs;
+    update_inserts(d, &[insert]) > 0
+}
+
+/// Evaluate the fields of the attributes of block references `inserts` again and put each one's
+/// value in its text; the number of references whose attribute text changed. Every field is
+/// evaluated on the drawing as it was before any of them changed, reading each reference's
+/// dynamic block data once: a field reads parameters and geometry, never attribute text, so the
+/// order the references come in makes no difference.
+pub fn update_inserts(d: &mut Drawing, inserts: &[Handle]) -> usize {
+    let changes: Vec<(Handle, Vec<Attrib>, usize)> = {
+        let mut r = Reader::new(d);
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for &h in inserts {
+            let Some(e) = r.drawing().entity(h) else { continue };
+            let EntityKind::Insert(ins) = &e.kind else { continue };
+            if !seen.insert(h) || !ins.attribs.iter().any(|a| a.field.is_some()) {
+                continue;
+            }
+            let mut attribs = ins.attribs.clone();
+            let n = evaluate_attribs(&mut r, h, &mut attribs);
+            if attribs != ins.attribs {
+                out.push((h, attribs, n));
+            }
         }
-    })
-    .is_ok()
-        && n > 0
+        out
+    };
+    let mut changed = 0;
+    for (h, attribs, n) in changes {
+        let set = d.modify_entity(h, |e| {
+            if let EntityKind::Insert(i) = &mut e.kind {
+                i.attribs = attribs;
+            }
+        });
+        if set.is_ok() && n > 0 {
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// The block references in model space and the layouts with attribute fields.
@@ -591,7 +624,7 @@ pub fn needs_update(d: &Drawing) -> bool {
 /// number of references whose attribute text changed.
 pub fn update_all(d: &mut Drawing) -> usize {
     let inserts: Vec<Handle> = with_fields(d).collect();
-    inserts.into_iter().filter(|h| update_insert(d, *h)).count()
+    update_inserts(d, &inserts)
 }
 
 #[cfg(test)]
@@ -607,8 +640,8 @@ mod tests {
 
     #[test]
     fn expressions() {
-        assert_eq!(expression("((round ((5547.830448673572)/5))*5)"), Some(5550.0));
-        assert_eq!(expression("round (377.9987/5)*0.5"), Some(38.0));
+        assert_eq!(expression("((round ((5548.2)/5))*5)"), Some(5550.0));
+        assert_eq!(expression("round (378.4/5)*0.5"), Some(38.0));
         assert_eq!(expression("round((10-2*3)/5)*5"), Some(5.0));
         assert_eq!(expression("2^3^2"), Some(512.0));
         assert_eq!(expression("-(2)+max(1, 4, 3)"), Some(2.0));
@@ -626,36 +659,37 @@ mod tests {
         assert_eq!(format_number(&d, 142.84787767753, "%lu2%pr2"), "142.85");
         assert_eq!(format_number(&d, 1465.0, "%lu6"), "1465.0000");
         assert_eq!(format_number(&d, -0.0001, "%lu2%pr0"), "0");
-        // A half rounds away from zero (VetCAD's "Пн10.101…": 1007.15 / 10 = 100.5 → 101).
+        // A half rounds away from zero: 100.5 → 101, -2.25 → -2.3.
         assert_eq!(format_number(&d, 100.5, "%lu2%pr0"), "101");
         assert_eq!(format_number(&d, -2.25, "%lu2%pr1"), "-2.3");
         assert_eq!(format_number(&d, 2.5, "%lu2%pr3%zs8"), "2.5");
         assert_eq!(format_number(&d, 2.5, "%lu2%pr1%ds44"), "2,5");
-        assert_eq!(format_number(&d, 2500.0, "%lu2%pr1%ct8[0.001]%ps[L=,м]"), "L=2.5м");
+        assert_eq!(format_number(&d, 2500.0, "%lu2%pr1%ct8[0.001]%ps[L=,m]"), "L=2.5m");
     }
 
     #[test]
     fn text_case() {
-        // A title block's sheet format, "A3 x 3" in the lookup table, shows as AutoCAD shows it.
+        // Upper, lower, first capital and title case, Latin and Cyrillic alike.
         assert_eq!(format_text("A3 x 3", "%tc4"), "A3 X 3");
-        assert_eq!(format_text("ш. стены", "%tc1"), "Ш. СТЕНЫ");
-        assert_eq!(format_text("ПЛИТА", "%tc3"), "Плита");
-        assert_eq!(format_text("Плита", "%tc2"), "плита");
-        assert_eq!(format_text("Плита", ""), "Плита");
+        assert_eq!(format_text("north wall", "%tc1"), "NORTH WALL");
+        assert_eq!(format_text("текст", "%tc1"), "ТЕКСТ");
+        assert_eq!(format_text("SLAB", "%tc3"), "Slab");
+        assert_eq!(format_text("Slab", "%tc2"), "slab");
+        assert_eq!(format_text("Slab", ""), "Slab");
     }
 
     #[test]
     fn a_text_field_joins_its_children() {
-        // VetCAD's position: "Г" + bar diameter + rounded length / 10 + rounded width / 10.
+        // A position mark: a prefix, a bar diameter, a rounded length / 10 and a rounded width / 10.
         let d = Drawing::new_metric();
-        let len = field("AcExpr", "\\AcExpr (round (%<\\_FldIdx 0>%/5)*0.5) \\f \"%lu2%pr0\"", vec![number(5547.830448673572)]);
-        let wid = field("AcExpr", "\\AcExpr (round (%<\\_FldIdx 0>%/5)*0.5) \\f \"%lu2%pr0\"", vec![number(377.9987298678607)]);
+        let len = field("AcExpr", "\\AcExpr (round (%<\\_FldIdx 0>%/5)*0.5) \\f \"%lu2%pr0\"", vec![number(5548.2)]);
+        let wid = field("AcExpr", "\\AcExpr (round (%<\\_FldIdx 0>%/5)*0.5) \\f \"%lu2%pr0\"", vec![number(378.4)]);
         let mut dia = number(20.000000000001);
         dia.code = "\\AcObjProp.16.2 Object(%<\\_ObjIdx 0>%).Parameter(39).UpdatedDistance \\f \"%lu2%pr0\"".into();
         dia.value = FieldValue::Double { value: 20.000000000001, text: "20".into() };
-        let mut f = field("_text", "Г%<\\_FldIdx 0>%.%<\\_FldIdx 1>%.%<\\_FldIdx 2>%", vec![dia, len, wid]);
+        let mut f = field("_text", "P%<\\_FldIdx 0>%.%<\\_FldIdx 1>%.%<\\_FldIdx 2>%", vec![dia, len, wid]);
         assert!(f.update(&d, Handle(1)));
-        assert_eq!(f.value.text(), "Г20.555.38");
+        assert_eq!(f.value.text(), "P20.555.38");
         // The parameter's reference doesn't exist: that child keeps the value it was read with.
         assert_eq!(f.children[0].value.text(), "20");
     }
@@ -663,7 +697,7 @@ mod tests {
     #[test]
     fn an_expression_with_no_format_is_a_whole_number() {
         let d = Drawing::new_metric();
-        let mut f = field("AcExpr", "\\AcExpr ((round ((%<\\_FldIdx 0>%)/5))*5)", vec![number(5547.830448673572)]);
+        let mut f = field("AcExpr", "\\AcExpr ((round ((%<\\_FldIdx 0>%)/5))*5)", vec![number(5548.2)]);
         f.update(&d, Handle(1));
         assert_eq!(f.value, FieldValue::Long { value: 5550, text: "5550".into() });
     }
@@ -684,6 +718,158 @@ mod tests {
         e.value = FieldValue::Long { value: 7, text: "7".into() };
         assert!(!e.update(&d, Handle(1)));
         assert_eq!(e.value.text(), "7");
+    }
+
+    /// A drawing with `n` references to dynamic block W, whose distance parameter 2 runs from
+    /// (0,0) to (10,0) along its line and whose user parameter 7 keeps a number: every other one
+    /// refers to it with its own values (an anonymous block whose line is as long as its width,
+    /// width 12 + i and user value 100 + i), the rest to W itself. References are scaled 1..=3.
+    /// Each has the attributes W (the width, one decimal), U (the user value, two decimals) and
+    /// L (the length of the block's line, as the reference shows it).
+    fn many_references(n: usize) -> (Drawing, Vec<Handle>) {
+        use crate::foreign::{Foreign, ForeignExtra, ForeignObject};
+        use crate::{Block, Common, Entity, HAlign, Insert, Line, Space, Text, VAlign};
+        use cadcraft_geom::Vec3;
+        use std::sync::Arc;
+
+        let tag = |code: i32, value: &str| RawTag { code, value: value.to_string() };
+        let dict = |h: u64, entries: &[(&str, u64)]| ForeignObject {
+            handle: Handle(h),
+            kind: "DICTIONARY".into(),
+            tags: entries.iter().flat_map(|(k, v)| [tag(3, k), tag(360, &Handle(*v).hex())]).collect(),
+        };
+        let record = |h: u64, tags: Vec<RawTag>| ForeignObject { handle: Handle(h), kind: "XRECORD".into(), tags };
+        let line = |h: u64, len: f64| Entity::new(Handle(h), EntityKind::Line(Line { a: Vec3::ZERO, b: Vec3::new(len, 0.0, 0.0) }));
+        let mut d = Drawing::new_metric();
+        let mut f = Foreign::default();
+        // Block W, its record (target 0x1F) and its evaluation graph.
+        const LINE: u64 = 0x10_0030;
+        let mut w = Block::new("W");
+        w.entities.push(line(LINE, 10.0));
+        d.blocks.insert("W".into(), Arc::new(w));
+        f.records.insert(("BLOCK_RECORD".into(), "W".into()), ForeignExtra { xdict: Some(Handle(0x10_0100)), ..Default::default() });
+        f.targets.insert(Handle(0x1F), ("BLOCK_RECORD".into(), "W".into()));
+        f.objects.push(dict(0x10_0100, &[("ACAD_ENHANCEDBLOCK", 0x10_0101)]));
+        f.objects.push(ForeignObject {
+            handle: Handle(0x10_0101),
+            kind: "ACAD_EVALUATION_GRAPH".into(),
+            tags: vec![tag(100, "AcDbEvalGraph"), tag(360, &Handle(0x10_0102).hex()), tag(360, &Handle(0x10_0103).hex())],
+        });
+        let point = |x: &str| [tag(1010, x), tag(1020, "0"), tag(1030, "0")];
+        let mut linear =
+            vec![tag(100, "AcDbEvalExpr"), tag(90, "2"), tag(100, "AcDbBlockParameter"), tag(280, "1"), tag(100, "AcDbBlock2PtParameter")];
+        linear.extend(point("0"));
+        linear.extend(point("10").map(|t| RawTag { code: t.code + 1, ..t }));
+        linear.extend([tag(100, "AcDbBlockLinearParameter"), tag(305, "Width")]);
+        f.objects.push(ForeignObject { handle: Handle(0x10_0102), kind: "BLOCKLINEARPARAMETER".into(), tags: linear });
+        f.objects.push(ForeignObject {
+            handle: Handle(0x10_0103),
+            kind: "BLOCKUSERPARAMETER".into(),
+            tags: vec![tag(100, "AcDbEvalExpr"), tag(90, "7")],
+        });
+
+        let field_of = |code: &str, objects: Vec<FieldObject>| Field { objects, ..field("AcObjProp.16.2", code, Vec::new()) };
+        let attrib = |name: &str, field: Field| Attrib {
+            field: Some(field),
+            tag: name.into(),
+            text: Text {
+                insert: Vec3::ZERO,
+                align_pt: None,
+                height: 1.0,
+                value: "?".into(),
+                rotation: 0.0,
+                width_factor: 1.0,
+                oblique: 0.0,
+                style: "Standard".into(),
+                halign: HAlign::Left,
+                valign: VAlign::Baseline,
+            },
+            invisible: false,
+            constant: false,
+            prompt: String::new(),
+            props: Default::default(),
+            multiline: None,
+            modes: Default::default(),
+        };
+        let width = field_of("\\AcObjProp.16.2 Object(%<\\_ObjIdx 0>%).Parameter(2).UpdatedDistance \\f \"%lu2%pr1\"", vec![FieldObject::Host]);
+        let attribs = vec![
+            attrib("W", field("_text", "W=%<\\_FldIdx 0>%", vec![width])),
+            attrib("U", field_of("\\AcObjProp.16.2 Object(%<\\_ObjIdx 0>%).Parameter(7).UserVariable \\f \"%lu2%pr2\"", vec![FieldObject::Host])),
+            attrib(
+                "L",
+                field_of("\\AcObjProp.16.2 Object(%<\\_ObjIdx 0>%,1).Length \\f \"%lu2%pr0\"", vec![FieldObject::Object { handle: Handle(LINE) }]),
+            ),
+        ];
+        let mut handles = Vec::new();
+        for i in 0..n {
+            let k = u64::try_from(i).unwrap_or(0);
+            let s = (i % 3 + 1) as f64;
+            let own = i % 2 == 1;
+            let block = if own { format!("*U{i}") } else { "W".into() };
+            let ins = Insert {
+                block: block.clone(),
+                insert: Vec3::new(i as f64 * 50.0, 0.0, 0.0),
+                scale: Vec3::new(s, s, 1.0),
+                rotation: 0.0,
+                attribs: attribs.clone(),
+                cols: 1,
+                rows: 1,
+                col_spacing: 0.0,
+                row_spacing: 0.0,
+            };
+            let h = d.add(&Space::Model, Common::default(), EntityKind::Insert(ins)).unwrap();
+            handles.push(h);
+            if !own {
+                continue;
+            }
+            let width = 12.0 + i as f64;
+            let mut u = Block::new(&block);
+            u.entities.push(line(0x20_0000 + k, width));
+            d.blocks.insert(block, Arc::new(u));
+            // xdict → representation → (data → W's record, cache → values).
+            let base = 0x30_0000 + k * 16;
+            f.entities.insert(h, ForeignExtra { xdict: Some(Handle(base)), ..Default::default() });
+            f.objects.push(dict(base, &[("AcDbBlockRepresentation", base + 1)]));
+            f.objects.push(dict(base + 1, &[("AcDbRepData", base + 2), ("AppDataCache", base + 3)]));
+            f.objects.push(record(base + 2, vec![tag(340, "1F")]));
+            f.objects.push(dict(base + 3, &[("ACAD_ENHANCEDBLOCKDATA", base + 4)]));
+            f.objects.push(dict(base + 4, &[("2", base + 5), ("7", base + 6)]));
+            let w = width.to_string();
+            f.objects.push(record(base + 5, [point("0"), point(&w)].concat().into_iter().map(|t| RawTag { code: t.code - 1000, ..t }).collect()));
+            f.objects.push(record(base + 6, vec![tag(40, &(100.0 + i as f64).to_string())]));
+        }
+        d.foreign = Arc::new(f);
+        (d, handles)
+    }
+
+    fn texts(d: &Drawing, h: Handle) -> Vec<String> {
+        match &d.entity(h).unwrap().kind {
+            EntityKind::Insert(i) => i.attribs.iter().map(|a| a.text.value.clone()).collect(),
+            k => panic!("{k:?}"),
+        }
+    }
+
+    #[test]
+    fn update_all_gives_what_updating_each_reference_gives() {
+        let (d, handles) = many_references(300);
+        let mut each = d.clone();
+        let changed = handles.iter().filter(|h| update_insert(&mut each, **h)).count();
+        let mut all = d.clone();
+        assert_eq!(update_all(&mut all), changed);
+        assert_eq!(changed, 300);
+        for h in &handles {
+            assert_eq!(texts(&all, *h), texts(&each, *h));
+        }
+        // W itself at scale 1, its own values at scale 2 (width 13), W itself at scale 3.
+        assert_eq!(texts(&all, handles[0]), ["W=10.0", "?", "10"]);
+        assert_eq!(texts(&all, handles[1]), ["W=26.0", "101.00", "26"]);
+        assert_eq!(texts(&all, handles[2]), ["W=30.0", "?", "30"]);
+        // Nothing changed since: evaluating again changes nothing.
+        assert_eq!(update_all(&mut all), 0);
+        assert_eq!(all.model.iter().map(|e| e.kind.clone()).collect::<Vec<_>>(), each.model.iter().map(|e| e.kind.clone()).collect::<Vec<_>>());
+        // The single-reference readers agree with the batch.
+        assert_eq!(crate::dynblock::parameter_value(&d, handles[1], 2, "UpdatedDistance"), Some(crate::dynblock::ParamValue::Number(26.0)));
+        assert_eq!(crate::dynblock::reference(&d, handles[0]).map(|r| r.definition), Some("W".into()));
     }
 
     #[test]

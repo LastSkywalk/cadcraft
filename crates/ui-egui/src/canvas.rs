@@ -304,7 +304,7 @@ fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], ctx: &egui::
         }
         s.finish()
     };
-    let (lwdisplay, transparency_display) = (app.session.drafting_settings().lwdisplay, app.session.settings.transparency_display);
+    let (lwdisplay, transparency_display) = (app.session.lwdisplay(), app.session.settings.transparency_display);
     let key: ListKey = (st.uid, st.revision, band(px), lod_band, lwdisplay, transparency_display, std::sync::Arc::as_ptr(&st.doc) as usize, vp_view);
     // A background build that finished: use it unless the drawing has changed since it started
     // (or the list was dropped to force a rebuild).
@@ -462,7 +462,7 @@ struct VpFrame {
 
 /// Build or reuse the active viewport's [`VpContent`] for this frame.
 fn ensure_vp_content(app: &mut CadApp, xf_paper: &Xf, ctx: &egui::Context) -> Option<VpFrame> {
-    let (lwdisplay, transparency) = (app.session.drafting_settings().lwdisplay, app.session.settings.transparency_display);
+    let (lwdisplay, transparency) = (app.session.lwdisplay(), app.session.settings.transparency_display);
     let stencil = stencil_clip(app);
     let c = &mut app.canvas.vp;
     let Some((st, (h, vp, clip))) = app.session.state().ok().and_then(|st| Some((st, split_viewport(st, stencil)?))) else {
@@ -1529,20 +1529,6 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         return;
     }
 
-    // Double-click a hatch (no command running) to edit it in the Hatch Edit dialog. The click is
-    // used up: it must not also start a grip edit on the hatch's centre grip below.
-    let mut hatch_dialog = false;
-    if inside
-        && dbl_primary
-        && app.session.running.is_none()
-        && let Some(hp) = hover_pos
-        && let Some(h) = hatch_at(app, xf.to_world(hp), scale)
-    {
-        app.session.set_selection(vec![h]);
-        crate::hatchdlg::open_edit(app);
-        hatch_dialog = true;
-    }
-
     // While a command asks for a point, every click places one, however fast the drafting (#815).
     // egui drops a click whose button comes up a few pixels from where it went down (a drag to it),
     // and eframe hands a slow frame's clicks over together, which egui reports as one.
@@ -1633,7 +1619,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         app.session.pending_window = None;
         app.canvas.drag_window = false;
     }
-    let pressed_primary = pressed_primary && !picked && !hatch_dialog && !idle_dbl;
+    let pressed_primary = pressed_primary && !picked && !idle_dbl;
     let key: CycleKey = (
         app.session.running.as_ref().map(|r| r.id.clone()),
         app.session.current_prompt().map(|p| p.message),
@@ -1829,13 +1815,13 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if let Some(f) = ensure_vp_content(app, &xf_paper, ui.ctx()) {
         let gpu = app.canvas.gpu.is_some();
         let clipped = painter.with_clip_rect(f.on_screen.intersect(rect));
-        draw_vp_content(&mut app.canvas.vp, gpu, &clipped, &f, &xf_paper, bg, app.session.settings.lwdisplay);
+        draw_vp_content(&mut app.canvas.vp, gpu, &clipped, &f, &xf_paper, bg, app.session.lwdisplay());
         masked = gpu && f.outline.is_some();
     }
     if app.canvas.gpu.is_some() {
-        draw_list_gpu(&mut app.canvas, &painter, &xf_paper, bg, app.session.settings.lwdisplay);
+        draw_list_gpu(&mut app.canvas, &painter, &xf_paper, bg, app.session.lwdisplay());
     } else if let Some(list) = &app.canvas.list {
-        draw_list(&painter, &xf_paper, list, bg, app.session.settings.lwdisplay);
+        draw_list(&painter, &xf_paper, list, bg, app.session.lwdisplay());
     }
     if let Some(vp) = &active_vp {
         // The active viewport: a heavy border, highlights in model units clipped to it.
@@ -2090,7 +2076,7 @@ fn draw_tiles(app: &CadApp, ui: &egui::Ui, tiles: &[(Rect, cadcraft_engine::Mode
         p.rect_filled(*r, 0.0, t.canvas);
         draw_grid(app, &p, &xf);
         if let Some(list) = &app.canvas.list {
-            draw_list(&p, &xf, list, bg, app.session.settings.lwdisplay);
+            draw_list(&p, &xf, list, bg, app.session.lwdisplay());
         }
         viewport_label(&p, *r);
     }
@@ -2219,15 +2205,6 @@ fn tooltip(p: &egui::Painter, at: Pos2, text: &str) {
     let r = Rect::from_min_size(at, galley.size() + vec2(8.0, 4.0));
     p.rect_filled(r, 2.0, Color32::from_rgb(0xf4, 0xf4, 0xf4));
     p.galley(r.min + vec2(4.0, 2.0), galley, Color32::BLACK);
-}
-
-/// The hatch under world point `w` within the pick aperture (PICKBOX × 1.5 pixels at `scale`
-/// pixels per unit), if any.
-fn hatch_at(app: &CadApp, w: Vec2, scale: f64) -> Option<Handle> {
-    let st = app.session.state().ok()?;
-    let aperture = app.session.settings.pickbox.max(1.0) * 1.5 / scale.max(1e-12);
-    let h = cadcraft_engine::select::pick(&st.doc, &st.edit_space(), w, aperture)?;
-    matches!(st.doc.entity(h)?.kind, cadcraft_doc::EntityKind::Hatch(_)).then_some(h)
 }
 
 /// Half the side of the pick box: the pick aperture (PICKBOX × 1.5 pixels, as `select::pick` is
@@ -2919,23 +2896,12 @@ mod compare;
 mod rebuild;
 
 #[cfg(test)]
-mod hatch_pick_tests {
+mod hatch_double_click_tests {
     use cadcraft_engine::Session;
     use cadcraft_geom::Vec2;
     use serde_json::json;
 
     use crate::{CadApp, Services};
-
-    #[test]
-    fn hatch_at_finds_a_hatch_under_the_cursor_only() {
-        let mut app = CadApp::new(Session::new(), Services::default());
-        app.session.execute("rectang", &json!({ "p1": [0, 0], "p2": [10, 10] })).unwrap();
-        let hx = app.session.execute("hatch", &json!({ "points": [[5, 5]], "pattern": "SOLID" })).unwrap()["handle"].as_str().unwrap().to_string();
-        app.session.execute("line", &json!({ "points": [[20, 0], [30, 0]] })).unwrap();
-        assert_eq!(super::hatch_at(&app, Vec2::new(5.0, 5.0), 10.0).map(|h| h.hex()), Some(hx));
-        assert_eq!(super::hatch_at(&app, Vec2::new(25.0, 0.0), 10.0), None, "a line is not a hatch");
-        assert_eq!(super::hatch_at(&app, Vec2::new(60.0, 60.0), 10.0), None);
-    }
 
     #[test]
     fn double_clicking_a_hatch_opens_the_hatch_edit_dialog() {

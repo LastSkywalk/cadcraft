@@ -72,13 +72,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("pan.down", "Pan Down", |s, _| pan_frac(s, Vec2::new(0.0, -0.25))).menu(&["View", "Pan", "Down"]).noundo().transparent(),
         CommandSpec::new("regen", "Regen", |s, _| {
             // Fields and table formulas are evaluated again (as on UPDATEFIELD).
-            super::table::recalc(s, None)?;
-            if s.doc().is_ok_and(cadcraft_doc::field::needs_update) {
-                let mut d = s.doc()?.clone();
-                if cadcraft_doc::field::update_all(&mut d) > 0 {
-                    *s.doc_mut()? = d;
-                }
-            }
+            super::blocks::update_fields(s, None)?;
             s.touch();
             Ok(json!({"message": "Regenerating model."}))
         })

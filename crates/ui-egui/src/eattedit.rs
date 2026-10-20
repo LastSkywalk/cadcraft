@@ -1,7 +1,8 @@
 //! The Enhanced Attribute Editor: a double-click on a block reference with attributes (or on
 //! one of its attributes) opens it, as in AutoCAD. It lists the reference's attributes (tag,
 //! prompt, value) with the one clicked current; the value box edits the current one. Apply and
-//! OK write the changed values with ATTEDIT (one undo step), Cancel leaves them.
+//! OK write the changed values with ATTEDIT (one undo step), Cancel leaves them. ATTEDIT or
+//! EATTEDIT typed or from a menu with such a reference selected opens it too ([`route`]).
 
 use cadcraft_engine::doc::{EntityKind, Handle};
 use egui::{RichText, Sense, vec2};
@@ -31,15 +32,31 @@ pub struct State {
     pub error: Option<String>,
 }
 
+/// Whether block reference `ins` has attributes to edit (constant ones have none).
+pub fn has_editable(ins: &cadcraft_engine::doc::Insert) -> bool {
+    ins.attribs.iter().any(|a| !a.constant)
+}
+
+/// ATTEDIT / EATTEDIT typed or from a menu, with one block reference that has attributes to edit
+/// selected: the editor opens on it. Otherwise (and for JSON calls) the command runs as usual,
+/// asking at the command line.
+pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    if !matches!(id, "attedit" | "ate" | "eattedit") || !params.is_null() {
+        return None;
+    }
+    let [h] = app.session.selection()[..] else { return None };
+    open(app, h, None).then_some(Ok(Value::Null))
+}
+
 /// Open the editor on block reference `h`, with the attribute nearest `at` (world) current.
 /// Returns false when `h` has no attribute to edit.
 pub fn open(app: &mut CadApp, h: Handle, at: Option<cadcraft_geom::Vec2>) -> bool {
     let Ok(d) = app.session.doc() else { return false };
     let Some(EntityKind::Insert(ins)) = d.entity(h).map(|e| &e.kind) else { return false };
-    let editable: Vec<_> = ins.attribs.iter().filter(|a| !a.constant).collect();
-    if editable.is_empty() {
+    if !has_editable(ins) {
         return false;
     }
+    let editable: Vec<_> = ins.attribs.iter().filter(|a| !a.constant).collect();
     let rows: Vec<Row> = editable
         .iter()
         .map(|a| Row { tag: a.tag.clone(), prompt: a.prompt.clone(), value: a.text.value.clone(), saved: a.text.value.clone() })
@@ -56,7 +73,7 @@ pub fn open(app: &mut CadApp, h: Handle, at: Option<cadcraft_geom::Vec2>) -> boo
                 .map(|(i, _)| i)
         })
         .unwrap_or(0);
-    let block = cadcraft_engine::doc::dynblock::reference(d, h).map_or_else(|| ins.block.clone(), |r| r.definition);
+    let block = crate::bedit::definition_name(d, h, &ins.block);
     app.eattedit = State { insert: Some(h), block, rows, current, error: None };
     app.ui.dialog = Some("eattedit".into());
     true

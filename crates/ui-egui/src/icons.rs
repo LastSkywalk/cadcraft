@@ -149,6 +149,16 @@ pub enum Icon {
     PickAdd,
     SelectObjects,
     QuickSelect,
+    // The in-place text editor's toolbar.
+    TextOverline,
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+    AlignJustify,
+    ListBullets,
+    ListNumbers,
+    InsertTab,
+    SymbolDiameter,
 }
 
 struct Pen<'a> {
@@ -937,6 +947,43 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             // A filter funnel with a spark.
             pen.poly(&[(3.0, 4.0), (19.0, 4.0), (13.0, 11.0), (13.0, 19.0), (9.0, 17.0), (9.0, 11.0)], true, b);
             pen.poly(&[(20.0, 10.0), (16.5, 15.5), (20.0, 15.5), (17.0, 21.0)], false, a);
+        }
+        TextOverline => {
+            pen.la(6.0, 4.0, 18.0, 4.0);
+            pen.c(12.0, 14.0, 6.0, b);
+        }
+        AlignLeft | AlignCenter | AlignRight | AlignJustify => {
+            // Four lines of text, the short ones set to the alignment.
+            for (i, short) in [false, true, false, true].into_iter().enumerate() {
+                let y = 5.0 + i as f32 * 4.7;
+                let (x0, x1) = match (icon, short) {
+                    (_, false) | (AlignJustify, true) => (3.0, 21.0),
+                    (AlignLeft, true) => (3.0, 13.0),
+                    (AlignCenter, true) => (7.0, 17.0),
+                    _ => (11.0, 21.0),
+                };
+                pen.l(x0, y, x1, y);
+            }
+        }
+        ListBullets | ListNumbers => {
+            for i in 0..3 {
+                let y = 6.0 + i as f32 * 6.0;
+                pen.l(9.0, y, 21.0, y);
+                if icon == ListBullets {
+                    pen.dot(4.5, y);
+                } else {
+                    pen.la(4.5, y - 2.2, 4.5, y + 2.2);
+                }
+            }
+        }
+        InsertTab => {
+            pen.l(3.0, 12.0, 16.0, 12.0);
+            pen.arrow_tip(17.0, 12.0, 1.0, 0.0, b);
+            pen.la(20.0, 6.0, 20.0, 18.0);
+        }
+        SymbolDiameter => {
+            pen.c(12.0, 12.0, 6.5, b);
+            pen.la(4.0, 20.0, 20.0, 4.0);
         }
     }
 }
