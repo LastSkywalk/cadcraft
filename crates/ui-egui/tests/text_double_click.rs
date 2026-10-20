@@ -52,13 +52,14 @@ fn text_at(h: &Harness<'_, CadApp>, i: usize) -> String {
 
 #[test]
 fn double_click_on_text_starts_textedit_for_that_object() {
-    for (i, at, old, new) in [(0, Vec2::new(4.0, 1.2), "HELLO", "HELLO WORLD"), (1, Vec2::new(3.0, 18.8), "first\nsecond", "edited")] {
+    for (i, at, old, new) in [(0, Vec2::new(4.0, 1.2), "HELLO", "HELLO WORLD"), (1, Vec2::new(3.0, 18.8), "first second", "edited")] {
         let mut h = harness();
         double_click(&mut h, at);
         let s = &h.state().session;
         assert_eq!(s.running.as_ref().map(|r| r.id.as_str()), Some("textedit"), "object {i}");
         let p = s.current_prompt().unwrap();
         assert_eq!(p.message, "Enter new text", "object {i}: the clicked text is already picked");
+        // The default on one line (multiline text: its lines run together).
         assert_eq!(p.default.as_deref(), Some(old), "object {i}");
         h.state_mut().session.input(Input::Text(new.into())).unwrap();
         h.run_steps(2);
