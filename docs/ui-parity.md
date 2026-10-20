@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (stable dash anchors on filled-object highlights) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (double-click actions as AutoCAD's defaults; in-place text editing; Enhanced Attribute Editor) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -92,6 +92,7 @@ ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**
 | Snap (rectangular, isometric, polar snap) | yes | rectangular and isometric (SNAPSTYL 1: the snap Y spacing along the isometric axes), from SNAPBASE turned by SNAPANG |
 | Isometric drafting (ISODRAFT, isoplanes F5) | yes | yes (#556): ISODRAFT and the status-bar toggle set SNAPSTYL and the plane; ISOPLANE / F5 / Ctrl+E cycle Left, Top, Right (SNAPISOPAIR); ortho, direct distance entry and the crosshair follow the plane's axes; ELLIPSE Isocircle (radius or Diameter, also for elliptical arcs); Drafting Settings snap style radio. Engine: `snap/iso.rs`, `cmd/settings/iso.rs` |
 | Drafting Settings dialog | yes | yes (`dialogs.rs:36-80`) |
+| Double-click actions (DBLCLKEDIT defaults) | yes | yes (#1321, `dblclick.rs`): text and attribute definitions open a one-line box over the text (`text_inplace.rs`), multiline text, dimensions (the measurement shown, kept as `<>`) and multileaders the multiline editor, all through TEXTEDIT; a block reference with attributes opens the Enhanced Attribute Editor (`eattedit.rs`, Attribute tab only), another block reference (dynamic too) Edit Block Definition with its block chosen, a polyline PEDIT, a spline SPLINEDIT, a hatch Hatch Edit, a viewport MSPACE; anything else the Properties palette. No Text Options/Properties tabs in the attribute editor, no Edit Attribute Definition dialog, no REFEDIT/TABLEDIT/MLEDIT/IMAGEADJUST actions yet |
 | Hatch and Gradient / Hatch Edit dialogs | yes | yes (`hatchdlg.rs`): pattern swatches, gradient colours and shapes, origin, pick points or objects, associative, separate, island detection; Hatch Edit adds boundaries from points or closed objects and removes selected loops; opened by HATCH, GRADIENT (HPDLGMODE), HATCHEDIT, right-click or double-clicking a hatch; no Preview or Inherit Properties |
 
 ## Dynamic input (≈ 45%)
@@ -209,6 +210,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | 2026-10-14 | minor | Holding Shift overrides ortho while it is held (on when ORTHOMODE is off, off when it is on), as in AutoCAD |
 | 2026-10-16 | minor | ALIASEDIT opens the Command Aliases dialog (#1381) |
 | 2026-10-18 | minor | In-window menu bar: once a menu is open, pointing at another title closes it and opens that one (#1567) |
+| 2026-10-20 | minor | Double-click actions as AutoCAD's defaults (#1321): in-place text editing for text, dimensions, multiline text and multileaders; Enhanced Attribute Editor; Edit Block Definition on block references; PEDIT, SPLINEDIT, Properties |
 | 2026-10-13 | minor | Options ▸ Selection adds Select using two clicks only; PICKDRAG 0 disables drag-window creation/completion, 2 preserves clicks or drag, and the preference survives restart; UI pointer and profile regressions |
 | 2026-10-12 | minor | Selected and hovered objects redrawn in the selection colour (text and arrowheads included); Options ▸ Selection laid out as AutoCAD's: Object grouping, Show grips, grip object limit, selection preview, Visual Effect Settings (selection area, preview filter) |
 | 2026-10-12 | minor | Animation effects (dialog and menu fades, smoothed wheel scrolling and ⌘/Ctrl+wheel zoom) follow the operating system's setting; View ▸ Accessibility ▸ Animation Effects chooses System, On or Off |

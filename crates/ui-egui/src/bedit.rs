@@ -108,6 +108,12 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
     Some(Ok(Value::Null))
 }
 
+/// Open the dialog with block `name` chosen (a double-click on a reference to it).
+pub fn open_on(app: &mut CadApp, name: String) {
+    app.bedit = State { name, ..State::default() };
+    app.ui.dialog = Some("bedit".into());
+}
+
 /// The preview of block `name` in `d`, built once per drawing revision.
 fn preview(app: &mut CadApp, name: &str) -> Option<Arc<DisplayList>> {
     let st = app.session.state().ok()?;

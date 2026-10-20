@@ -2174,7 +2174,60 @@ fn text_of(k: &EntityKind) -> Option<String> {
         EntityKind::AttDef(a) => Some(a.text.value.clone()),
         EntityKind::MText(t) => Some(t.contents.replace("\\P", "\n")),
         EntityKind::Dimension(d) => Some(if d.text.is_empty() { "<>".into() } else { d.text.clone() }),
+        EntityKind::MLeader(m) => m.text.as_ref().map(|t| t.contents.replace("\\P", "\n")),
         _ => None,
+    }
+}
+
+/// What the in-place editor shows for an object TEXTEDIT edits: a text or attribute definition
+/// in a one-line box, multiline text, a dimension's or a multileader's text in the multiline
+/// editor. A dimension shows its measurement where its text has `<>` (the measured text, for
+/// [`TextEditM`] to turn back into `<>`).
+fn in_place(s: &Session, k: &EntityKind) -> (Option<InPlace>, Option<String>) {
+    match k {
+        EntityKind::Text(t) => (Some(InPlace::Line(t.clone())), None),
+        EntityKind::AttDef(a) => (Some(InPlace::Line(a.text.clone())), None),
+        EntityKind::MText(m) => (Some(InPlace::Multi(m.clone())), None),
+        EntityKind::MLeader(m) => (m.text.clone().map(InPlace::Multi), None),
+        EntityKind::Dimension(dm) => {
+            let Ok(d) = s.doc() else { return (None, None) };
+            let plain = cadcraft_doc::Dimension { text: String::new(), ..dm.clone() };
+            let g = cadcraft_render::dimension_in(d, &plain);
+            let measured = g.mtext;
+            let contents = if dm.text.is_empty() {
+                measured.clone()
+            } else if dm.text.trim().is_empty() {
+                String::new()
+            } else {
+                dm.text.replace("<>", &measured)
+            };
+            let style = d.dim_style(&dm.style).map(|st| st.text_style.clone()).unwrap_or_else(|| "Standard".into());
+            let m = cadcraft_doc::MText {
+                insert: g.text_pos.to3(0.0),
+                height: g.text_height,
+                width: 0.0,
+                attach: 5,
+                rotation: g.text_angle,
+                style,
+                contents,
+                line_spacing: 1.0,
+                line_spacing_exact: false,
+                columns: None,
+            };
+            (Some(InPlace::Multi(m)), Some(measured))
+        }
+        _ => (None, None),
+    }
+}
+
+/// The text a dimension's editor gave, with its measurement turned back into `<>`.
+fn with_measurement(text: &str, measured: &str) -> String {
+    if text == measured {
+        "<>".into()
+    } else if !measured.is_empty() && text.contains(measured) {
+        text.replacen(measured, "<>", 1)
+    } else {
+        text.to_string()
     }
 }
 
@@ -2191,6 +2244,10 @@ pub(crate) fn set_text(s: &mut Session, h: Handle, text: &str) -> Result<()> {
             d.text = if text == "<>" { String::new() } else { text.to_string() };
             d.block = None;
         }
+        EntityKind::MLeader(m) => match &mut m.text {
+            Some(t) => t.contents = text.replace('\n', "\\P"),
+            None => return Err(other("The multileader has no text.")),
+        },
         _ => return Err(other("Select a text, mtext, attribute definition or dimension.")),
     }
     set_kind(s, h, k)
@@ -2206,9 +2263,19 @@ fn run_textedit(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "handle": h.hex() }))
 }
 
+/// An object's text as TEXTEDIT's in-place editor shows it.
+enum InPlace {
+    Line(cadcraft_doc::Text),
+    Multi(cadcraft_doc::MText),
+}
+
 #[derive(Default)]
 struct TextEditM {
     h: Option<(Handle, String)>,
+    /// The picked object's text for the in-place editor.
+    inplace: Option<InPlace>,
+    /// A picked dimension's measured text, as its editor shows it.
+    measured: Option<String>,
     /// Edits made in this run, newest last: each object as it was before (the Undo option).
     edits: Vec<(Handle, EntityKind)>,
     /// Single mode: end after one edit (the Mode option; Multiple by default).
@@ -2220,6 +2287,18 @@ struct TextEditM {
 impl Interactive for TextEditM {
     fn name(&self) -> &'static str {
         "TEXTEDIT"
+    }
+    fn editing_mtext(&self) -> Option<cadcraft_doc::MText> {
+        match (&self.h, &self.inplace) {
+            (Some(_), Some(InPlace::Multi(m))) => Some(m.clone()),
+            _ => None,
+        }
+    }
+    fn editing_line(&self) -> Option<cadcraft_doc::Text> {
+        match (&self.h, &self.inplace) {
+            (Some(_), Some(InPlace::Line(t))) => Some(t.clone()),
+            _ => None,
+        }
     }
     fn prompt(&self, _s: &Session) -> Prompt {
         if self.mode {
@@ -2245,20 +2324,28 @@ impl Interactive for TextEditM {
         match (&self.h, i) {
             (None, Input::Point(p)) => {
                 let h = curves::pick_at(s, p).ok_or_else(|| other("*Invalid selection*"))?;
-                let old = text_of(&curves::entity(s, h)?.kind).ok_or_else(|| other("Select a text, mtext, attribute definition or dimension."))?;
+                let kind = curves::entity(s, h)?.kind;
+                let old = text_of(&kind).ok_or_else(|| other("Select a text, mtext, attribute definition or dimension."))?;
+                (self.inplace, self.measured) = in_place(s, &kind);
                 self.h = Some((h, old));
                 Ok(Step::Continue)
             }
             (Some((h, _)), Input::Text(t) | Input::Keyword(t)) => {
                 let h = *h;
                 let before = curves::entity(s, h)?.kind;
+                let t = match &self.measured {
+                    Some(m) => with_measurement(&t, m),
+                    None => t,
+                };
                 set_text(s, h, &t)?;
                 self.edits.push((h, before));
                 self.h = None;
+                (self.inplace, self.measured) = (None, None);
                 Ok(if self.single { Step::Done } else { Step::Continue })
             }
             (Some(_), Input::Enter) => {
                 self.h = None;
+                (self.inplace, self.measured) = (None, None);
                 Ok(if self.single { Step::Done } else { Step::Continue })
             }
             (None, Input::Enter) => Ok(Step::Done),

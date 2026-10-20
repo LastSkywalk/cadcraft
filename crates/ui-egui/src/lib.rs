@@ -20,11 +20,14 @@ pub mod cmdline;
 pub mod context_menu;
 pub mod control;
 pub mod credits;
+mod dblclick;
 pub mod dialogs;
 pub mod docking;
+mod eattedit;
 pub mod hatchdlg;
 mod mtext_editor;
 pub mod spacemouse;
+mod text_inplace;
 // The External References palette.
 pub mod xrefs;
 
@@ -248,6 +251,8 @@ pub struct CadApp {
     pub hatch_dlg: Option<hatchdlg::HatchDlgState>,
     /// The Edit Block Definition dialog ([`bedit`]).
     pub bedit: bedit::State,
+    /// The Enhanced Attribute Editor ([`eattedit`]).
+    pub eattedit: eattedit::State,
 }
 
 impl CadApp {
@@ -288,6 +293,7 @@ impl CadApp {
             alias_dlg: None,
             hatch_dlg: None,
             bedit: bedit::State::default(),
+            eattedit: eattedit::State::default(),
         }
     }
 

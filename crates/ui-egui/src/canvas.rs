@@ -1508,13 +1508,12 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             return;
         }
     }
-    // Double-click text or a dimension to edit its text, or a block reference to edit its
-    // attributes, as in AutoCAD: TEXTEDIT or ATTEDIT with that object already picked.
+    // Double-click an object to edit it as AutoCAD's double-click actions do ([`crate::dblclick`]).
     if inside
         && dbl_primary
         && app.session.running.is_none()
         && let Some(hp) = hover_pos
-        && edit_text_at(app, xf.to_world(hp))
+        && crate::dblclick::at(app, xf.to_world(hp))
     {
         return;
     }
@@ -2052,40 +2051,6 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
 }
 
 /// The model space tiles on screen (none without tiling): each tile's rectangle in `full`.
-/// Start TEXTEDIT on the text, mtext or attribute definition at `p` (the objects its shortcut menu
-/// offers Edit Text for); false when there is none.
-fn edit_text_at(app: &mut CadApp, p: Vec2) -> bool {
-    use cadcraft_engine::doc::EntityKind;
-    enum Edit {
-        Text,
-        Attributes(cadcraft_engine::doc::Handle),
-    }
-    let edit = cadcraft_engine::cmd::curves::pick_at(&app.session, p).and_then(|h| {
-        app.session.doc().ok()?.entity(h).and_then(|e| match &e.kind {
-            EntityKind::Text(_) | EntityKind::MText(_) | EntityKind::AttDef(_) | EntityKind::Dimension(_) => Some(Edit::Text),
-            // A block reference with attributes to edit: its attribute values (AutoCAD's
-            // double-click opens the attribute editor on it).
-            EntityKind::Insert(i) if i.attribs.iter().any(|a| !a.constant) => Some(Edit::Attributes(h)),
-            _ => None,
-        })
-    });
-    let result = match edit {
-        Some(Edit::Text) => {
-            app.start("textedit");
-            app.session.input(Input::Point(p))
-        }
-        Some(Edit::Attributes(h)) => {
-            app.start("attedit");
-            app.session.input(Input::Pick(vec![h]))
-        }
-        None => return false,
-    };
-    if let Err(e) = result {
-        app.session.echo(e.to_string());
-    }
-    true
-}
-
 fn tile_rects(app: &CadApp, full: Rect) -> Vec<(Rect, cadcraft_engine::ModelTile)> {
     let x = |f: f64| full.left() + full.width() * f.clamp(0.0, 1.0) as f32;
     let y = |f: f64| full.bottom() - full.height() * f.clamp(0.0, 1.0) as f32;

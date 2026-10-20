@@ -184,11 +184,15 @@ fn running(h: &Harness<'_, CadApp>) -> Option<String> {
 #[test]
 fn double_clicking_a_block_reference_edits_its_attributes() {
     let mut h = harness();
-    // The door reference's attribute text: its attributes, the reference already picked.
+    // The door reference's attribute text: the Enhanced Attribute Editor, as AutoCAD opens on an
+    // attributed (dynamic) block, named by the dynamic block, the attribute clicked current.
     let at = screen(&h, Vec2::new(101.0, 50.5));
     double_click(&mut h, at);
-    assert_eq!(running(&h).as_deref(), Some("attedit"), "log: {:?}", h.state().session.log);
-    assert!(h.state().session.current_prompt().is_some_and(|p| p.message.contains("WIDTH")), "{:?}", h.state().session.current_prompt());
+    assert_eq!(h.state().ui.dialog.as_deref(), Some("eattedit"), "log: {:?}", h.state().session.log);
+    assert!(running(&h).is_none());
+    let st = &h.state().eattedit;
+    assert_eq!(st.block, "Door");
+    assert_eq!(st.rows.get(st.current).map(|r| r.tag.as_str()), Some("WIDTH"));
 }
 
 #[test]

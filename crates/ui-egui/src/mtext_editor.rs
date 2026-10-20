@@ -36,6 +36,8 @@ struct State {
     sel: (usize, usize),
     /// A caret position to set on the text box in the next frame (after a toolbar insertion).
     caret: Option<usize>,
+    /// The text box has had the keyboard focus once (it takes it when it opens).
+    focused: bool,
 }
 
 fn state_id() -> egui::Id {
@@ -67,14 +69,16 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     let t = Tokens::get();
     let (rect, scale) = app.canvas.xf.map_or((ctx.content_rect(), 20.0), |x| (x.rect, x.scale.max(1e-6)));
     let mut st = ctx.data_mut(|d| d.get_temp::<State>(state_id())).unwrap_or_else(|| {
-        let mut fmt = Formatted::default();
+        // TEXTEDIT opens the editor on an object's text; MTEXT on an empty box.
+        let mut fmt = if mt.contents.is_empty() { Formatted::default() } else { Formatted::from_contents(&mt.contents) };
         if let Some(f) = app.session.doc().ok().and_then(|d| d.text_style(&mt.style).map(|s| s.font.clone())) {
             // A family name, not a font file (`txt.shx`, `arial.ttf`).
             if !f.is_empty() && !f.contains('.') {
                 fmt.base_font = f;
             }
         }
-        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret: None }
+        let caret = Some(fmt.len());
+        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret, focused: false }
     });
     let base_h = if mt.height > 0.0 { mt.height } else { 0.2 };
     let px = ((base_h * scale) as f32).clamp(MIN_PX, MAX_PX);
@@ -123,7 +127,9 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         Done::Ok => {
             ctx.data_mut(|d| d.remove::<State>(state_id()));
             // The editor holds the whole contents: one input, then Enter ends MTEXT's text entry.
-            if !st.fmt.is_empty() {
+            // TEXTEDIT takes the text as it is, even emptied.
+            let editing = app.session.running.as_ref().is_some_and(|r| r.id == "textedit");
+            if !st.fmt.is_empty() || editing {
                 let _ = app.session.input(cadcraft_engine::Input::Text(st.fmt.to_contents()));
             }
             if app.session.running.as_ref().is_some_and(|r| r.id == "mtext") {
@@ -437,9 +443,10 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
         .char_limit(cadcraft_engine::mtext_edit::MAX_CHARS)
         .layouter(&mut layouter)
         .show(ui);
-    if !out.response.has_focus() && buf.is_empty() && st.fmt.is_empty() {
+    if !out.response.has_focus() && ((buf.is_empty() && st.fmt.is_empty()) || !st.focused) {
         out.response.request_focus();
     }
+    st.focused = true;
     if out.response.changed() {
         let typing = st.typing.clone();
         st.fmt.set_text(&buf, &typing);
