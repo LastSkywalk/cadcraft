@@ -22,6 +22,12 @@ const MAX_PX: f32 = 36.0;
 const FAMILIES: [&str; 6] = ["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia", "Calibri"];
 /// The standard colours (ACI 1..=7) of the colour menu.
 const SWATCHES: [u16; 7] = [1, 2, 3, 4, 5, 6, 7];
+/// Narrowest the editor gets (the toolbar then takes two rows) and its width for text with no
+/// width of its own (a dimension's, a multileader's without one).
+const MIN_WIDTH: f32 = 330.0;
+const DEFAULT_WIDTH: f32 = 420.0;
+/// Size of a toolbar button.
+const TOOL: f32 = 24.0;
 /// Ruler snap, in text heights.
 const SNAP: f64 = 0.25;
 
@@ -104,7 +110,10 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     });
     let base_h = if mt.height > 0.0 { mt.height } else { 0.2 };
     let px = ((base_h * scale) as f32).clamp(MIN_PX, MAX_PX);
-    let width = if mt.width > 0.0 { ((mt.width * scale) as f32).clamp(280.0, rect.width().max(280.0) * 0.9) } else { 380.0 };
+    // The text's own width when it has one, never narrower than the toolbar's two rows nor
+    // wider than most of the canvas; the toolbar and buttons wrap within it.
+    let widest = (rect.width() * 0.9).max(MIN_WIDTH);
+    let width = if mt.width > 0.0 { ((mt.width * scale) as f32).clamp(MIN_WIDTH, widest) } else { DEFAULT_WIDTH.min(widest) };
     // The box's top-left corner on screen (rotation is ignored while editing).
     let code = usize::from(mt.attach.clamp(1, 9) - 1);
     let (col, row) = ((code % 3) as f64, (code / 3) as f64);
@@ -120,23 +129,22 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.accent)).inner_margin(egui::Margin::same(0)).show(ui, |ui| {
             ui.set_width(width);
             let y0 = ui.cursor().top();
-            toolbar(ui, &mut st, base_h);
+            toolbar(ui, &mut st, base_h, width);
             follow_value(&mut st);
             ruler(ui, &mut st, px, width, base_h);
             st.top = ui.cursor().top() - y0;
             text_box(ui, &mut st, base_h, px, width, &t);
             follow_value(&mut st);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(4.0);
-                if ui.button(crate::tl!("OK")).clicked() {
+                let finish = if ui.ctx().os().is_mac() { crate::tl!("⌘↩ to finish") } else { crate::tl!("Ctrl+Enter to finish") };
+                if ui.button(crate::tl!("OK")).on_hover_text(finish).clicked() {
                     done = Done::Ok;
                 }
                 if ui.button(crate::tl!("Cancel")).clicked() {
                     done = Done::Cancel;
                 }
                 measurement_buttons(ui, &mut st);
-                let finish = if ui.ctx().os().is_mac() { crate::tl!("⌘↩ to finish") } else { crate::tl!("Ctrl+Enter to finish") };
-                ui.label(RichText::new(finish).small().color(t.text_dim));
             });
         });
     });
@@ -197,7 +205,7 @@ fn follow_value(st: &mut State) {
 /// caret (when the text is fixed).
 fn measurement_buttons(ui: &mut egui::Ui, st: &mut State) {
     let Some(m) = st.measured.clone() else { return };
-    ui.separator();
+    ui.add_space(GAP);
     let reset = ui
         .button(crate::tl!("Reset to Measurement"))
         .on_hover_text(crate::tl!("The text becomes the measured value alone, which follows the dimension when it is stretched"));
@@ -273,7 +281,7 @@ fn set_flag(c: &mut CharFmt, f: Flag, on: bool) {
     }
 }
 
-fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64) {
+fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64, width: f32) {
     let cur = current(st);
     let range = st.sel.0.min(st.sel.1)..st.sel.0.max(st.sel.1);
     let mut refocus = false;
@@ -299,88 +307,196 @@ fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64) {
             let none = (h - base_h).abs() < 1e-9;
             change(st, |c| c.height = (!none).then_some(h));
         }
-        ui.separator();
-        for (flag, label, tip) in [
-            (Flag::Bold, RichText::new("B").strong(), crate::tl!("Bold")),
-            (Flag::Italic, RichText::new("I").italics(), crate::tl!("Italic")),
-            (Flag::Underline, RichText::new("U").underline(), crate::tl!("Underline")),
-            (Flag::Overline, RichText::new("O").strikethrough(), crate::tl!("Overline")),
-        ] {
-            if ui.selectable_label(flag_of(&cur, flag), label).on_hover_text(tip).clicked() {
-                toggle(st, flag);
-                refocus = true;
-            }
-        }
-        // Colour
-        let swatch = cur.color.map_or(ui.visuals().text_color(), color32);
-        ui.menu_button(RichText::new("A▾").color(swatch).strong(), |ui| {
-            if ui.button(crate::tl!("ByLayer")).clicked() {
-                change(st, |c| c.color = None);
-                refocus = true;
-                ui.close();
-            }
-            ui.horizontal(|ui| {
-                for v in SWATCHES {
-                    let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-                    ui.painter().rect_filled(r, 2.0, color32(MTextColor::Aci(v)));
-                    if resp.clicked() {
-                        change(st, |c| c.color = Some(MTextColor::Aci(v)));
-                        refocus = true;
-                        ui.close();
-                    }
+        ui.add_space(GAP);
+        ui.horizontal(|ui| {
+            for (flag, label, tip) in [
+                (Flag::Bold, RichText::new("B").strong(), crate::tl!("Bold")),
+                (Flag::Italic, RichText::new("I").italics(), crate::tl!("Italic")),
+                (Flag::Underline, RichText::new("U").underline(), crate::tl!("Underline")),
+            ] {
+                if tool_text(ui, label, flag_of(&cur, flag)).on_hover_text(tip).clicked() {
+                    toggle(st, flag);
+                    refocus = true;
                 }
-            });
-            let mut rgb = cur.color.map_or([255, 255, 255], |c| {
-                let k = color32(c);
-                [k.r(), k.g(), k.b()]
-            });
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                let v = (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2]);
-                change(st, |c| c.color = Some(MTextColor::Rgb(v)));
             }
-        })
-        .response
-        .on_hover_text(crate::tl!("Text color"));
-        ui.separator();
+            if tool(ui, Glyph::Overline, flag_of(&cur, Flag::Overline)).on_hover_text(crate::tl!("Overline")).clicked() {
+                toggle(st, Flag::Overline);
+                refocus = true;
+            }
+            // Colour: an A underlined in the text's colour.
+            let swatch = cur.color.map_or(ui.visuals().text_color(), color32);
+            ui.menu_button(RichText::new("A").color(swatch).strong().underline(), |ui| {
+                if ui.button(crate::tl!("ByLayer")).clicked() {
+                    change(st, |c| c.color = None);
+                    refocus = true;
+                    ui.close();
+                }
+                ui.horizontal(|ui| {
+                    for v in SWATCHES {
+                        let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                        ui.painter().rect_filled(r, 2.0, color32(MTextColor::Aci(v)));
+                        if resp.clicked() {
+                            change(st, |c| c.color = Some(MTextColor::Aci(v)));
+                            refocus = true;
+                            ui.close();
+                        }
+                    }
+                });
+                let mut rgb = cur.color.map_or([255, 255, 255], |c| {
+                    let k = color32(c);
+                    [k.r(), k.g(), k.b()]
+                });
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    let v = (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2]);
+                    change(st, |c| c.color = Some(MTextColor::Rgb(v)));
+                }
+            })
+            .response
+            .on_hover_text(crate::tl!("Text color"));
+        });
+        // Character formats on one row, paragraphs and symbols on the next, unless both fit.
+        if width < ONE_ROW_WIDTH {
+            ui.end_row();
+            ui.add_space(4.0);
+        } else {
+            ui.add_space(GAP);
+        }
         // Paragraph alignment
         let para = st.fmt.para(st.fmt.paragraph_of(range.start));
-        for (al, glyph, tip) in [
-            (ParaAlign::Left, "⇤", crate::tl!("Left")),
-            (ParaAlign::Center, "↔", crate::tl!("Center")),
-            (ParaAlign::Right, "⇥", crate::tl!("Right")),
-            (ParaAlign::Justify, "≡", crate::tl!("Justify")),
-        ] {
-            let on = para.align == al;
-            if ui.selectable_label(on, glyph).on_hover_text(tip).clicked() {
-                st.fmt.edit_paras(range.clone(), |p| p.align = if on { ParaAlign::Default } else { al });
-                refocus = true;
+        ui.horizontal(|ui| {
+            for (al, glyph, tip) in [
+                (ParaAlign::Left, Glyph::AlignLeft, crate::tl!("Left")),
+                (ParaAlign::Center, Glyph::AlignCenter, crate::tl!("Center")),
+                (ParaAlign::Right, Glyph::AlignRight, crate::tl!("Right")),
+                (ParaAlign::Justify, Glyph::Justify, crate::tl!("Justify")),
+            ] {
+                let on = para.align == al;
+                if tool(ui, glyph, on).on_hover_text(tip).clicked() {
+                    st.fmt.edit_paras(range.clone(), |p| p.align = if on { ParaAlign::Default } else { al });
+                    refocus = true;
+                }
             }
-        }
-        ui.separator();
+        });
+        ui.add_space(GAP);
         // Lists and special characters
-        if ui.button("•≡").on_hover_text(crate::tl!("Bulleted list")).clicked() {
-            st.fmt.make_list(range.clone(), ListStyle::Bullet, 3.0 * base_h);
-            refocus = true;
-        }
-        if ui.button("1≡").on_hover_text(crate::tl!("Numbered list")).clicked() {
-            st.fmt.make_list(range.clone(), ListStyle::Number, 3.0 * base_h);
-            refocus = true;
-        }
-        for (glyph, tip, code) in [
-            ("⇥|", crate::tl!("Insert tab"), "\t"),
-            ("°", crate::tl!("Degree"), "°"),
-            ("±", crate::tl!("Plus/minus"), "±"),
-            ("⌀", crate::tl!("Diameter"), "⌀"),
-        ] {
-            if ui.button(glyph).on_hover_text(tip).clicked() {
-                insert(st, code);
+        ui.horizontal(|ui| {
+            if tool(ui, Glyph::Bullets, false).on_hover_text(crate::tl!("Bulleted list")).clicked() {
+                st.fmt.make_list(range.clone(), ListStyle::Bullet, 3.0 * base_h);
                 refocus = true;
             }
-        }
+            if tool(ui, Glyph::Numbers, false).on_hover_text(crate::tl!("Numbered list")).clicked() {
+                st.fmt.make_list(range.clone(), ListStyle::Number, 3.0 * base_h);
+                refocus = true;
+            }
+            if tool(ui, Glyph::Tab, false).on_hover_text(crate::tl!("Insert tab")).clicked() {
+                insert(st, "\t");
+                refocus = true;
+            }
+            for (label, tip, code) in [("°", crate::tl!("Degree"), "°"), ("±", crate::tl!("Plus/minus"), "±")] {
+                if tool_text(ui, RichText::new(label), false).on_hover_text(tip).clicked() {
+                    insert(st, code);
+                    refocus = true;
+                }
+            }
+            if tool(ui, Glyph::Diameter, false).on_hover_text(crate::tl!("Diameter")).clicked() {
+                insert(st, "⌀");
+                refocus = true;
+            }
+        });
     });
     if refocus {
         ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
     }
+}
+
+/// Space between toolbar groups.
+const GAP: f32 = 6.0;
+/// Narrowest editor whose toolbar is one row.
+const ONE_ROW_WIDTH: f32 = 660.0;
+
+/// A toolbar picture drawn in code: the interface font has no glyph for some of these on every
+/// system (they showed as empty boxes on Windows).
+#[derive(Clone, Copy)]
+enum Glyph {
+    Overline,
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+    Justify,
+    Bullets,
+    Numbers,
+    Tab,
+    Diameter,
+}
+
+/// A toolbar button's frame: a square, highlighted when `on` or hovered.
+fn tool_frame(ui: &mut egui::Ui, on: bool) -> (egui::Response, Rect, Stroke) {
+    let resp = ui.allocate_response(vec2(TOOL, TOOL), Sense::click());
+    let v = ui.style().interact_selectable(&resp, on);
+    if on || resp.hovered() {
+        ui.painter().rect(resp.rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, egui::StrokeKind::Inside);
+    }
+    let r = resp.rect;
+    (resp, r, Stroke::new(1.4, v.fg_stroke.color))
+}
+
+/// A toolbar button showing `label`.
+fn tool_text(ui: &mut egui::Ui, label: RichText, on: bool) -> egui::Response {
+    let (resp, r, stroke) = tool_frame(ui, on);
+    let galley =
+        egui::WidgetText::from(label.color(stroke.color)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
+    ui.painter().galley(r.center() - galley.size() / 2.0, galley, stroke.color);
+    resp
+}
+
+/// A toolbar button showing `glyph`.
+fn tool(ui: &mut egui::Ui, glyph: Glyph, on: bool) -> egui::Response {
+    let (resp, r, stroke) = tool_frame(ui, on);
+    let p = ui.painter();
+    // A 14-point square in the middle: x, y from its top-left corner.
+    let o = r.center() - vec2(7.0, 7.0);
+    let at = |x: f32, y: f32| o + vec2(x, y);
+    let line = |a: (f32, f32), b: (f32, f32)| p.line_segment([at(a.0, a.1), at(b.0, b.1)], stroke);
+    // Four text lines, each (start, end) along x.
+    let rows = |spans: [(f32, f32); 4]| {
+        for (i, (a, b)) in spans.iter().enumerate() {
+            let y = 1.5 + i as f32 * 3.7;
+            line((*a, y), (*b, y));
+        }
+    };
+    match glyph {
+        Glyph::Overline => {
+            line((2.0, 1.0), (12.0, 1.0));
+            p.circle_stroke(at(7.0, 8.5), 4.5, stroke);
+        }
+        Glyph::AlignLeft => rows([(0.0, 14.0), (0.0, 9.0), (0.0, 14.0), (0.0, 7.0)]),
+        Glyph::AlignCenter => rows([(0.0, 14.0), (2.5, 11.5), (0.0, 14.0), (3.5, 10.5)]),
+        Glyph::AlignRight => rows([(0.0, 14.0), (5.0, 14.0), (0.0, 14.0), (7.0, 14.0)]),
+        Glyph::Justify => rows([(0.0, 14.0); 4]),
+        Glyph::Bullets | Glyph::Numbers => {
+            for i in 0..3 {
+                let y = 2.0 + i as f32 * 5.0;
+                line((5.0, y), (14.0, y));
+                if matches!(glyph, Glyph::Bullets) {
+                    p.circle_filled(at(1.5, y), 1.4, stroke.color);
+                } else {
+                    // Short strokes standing for 1, 2, 3.
+                    line((1.5, y - 1.8), (1.5, y + 1.8));
+                }
+            }
+        }
+        Glyph::Tab => {
+            line((0.0, 7.0), (11.0, 7.0));
+            line((7.0, 3.5), (11.0, 7.0));
+            line((7.0, 10.5), (11.0, 7.0));
+            line((13.5, 2.0), (13.5, 12.0));
+        }
+        Glyph::Diameter => {
+            p.circle_stroke(at(7.0, 7.0), 5.0, stroke);
+            line((1.0, 13.0), (13.0, 1.0));
+        }
+    }
+    resp
 }
 
 /// Insert `s` at the caret (over the selection).
@@ -473,7 +589,7 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
     let value = st.value;
     let default_color = t.text;
     // The measured value's background (AutoCAD shows it as a gray field).
-    let value_bg = Color32::from_rgba_unmultiplied(140, 140, 140, 90);
+    let value_bg = Color32::from_rgba_unmultiplied(255, 255, 255, 46);
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| -> Arc<egui::Galley> {
         let mut job = LayoutJob::default();
         job.wrap.max_width = wrap;
@@ -524,6 +640,8 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
         .desired_rows(5)
         .margin(egui::Margin::symmetric(4, 4))
         .lock_focus(true)
+        // Opaque: the object being edited doesn't show through.
+        .background_color(t.field.to_opaque())
         .char_limit(cadcraft_engine::mtext_edit::MAX_CHARS)
         .layouter(&mut layouter)
         .show(ui);

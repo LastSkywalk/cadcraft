@@ -1753,7 +1753,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     // The cursor picks objects (pick box, rollover highlight): "Select objects" and single-object
     // prompts, or no command with PICKFIRST on; SELECTIONPREVIEW says in which of those it shows.
     let selecting = app.session.previews_selection();
-    if inside && selecting && app.session.pending_window.is_none() {
+    // Not while text is edited in place: the editor covers the object (as AutoCAD hides it).
+    let editing = app.session.editing_mtext().is_some() || app.session.editing_line().is_some();
+    if inside && selecting && !editing && app.session.pending_window.is_none() {
         if hover_pos != app.canvas.hover_at
             && let (Some(w), Ok(st)) = (raw_world, app.session.state())
         {

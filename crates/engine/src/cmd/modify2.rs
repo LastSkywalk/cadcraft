@@ -2313,7 +2313,8 @@ impl Interactive for TextEditM {
         }
         match &self.h {
             None => Prompt::new("Select an annotation object", Accept::POINT).kw(&["Undo", "Mode"]),
-            Some((_, old)) => Prompt::new("Enter new text", Accept::TEXT).default(old.chars().take(40).collect::<String>()),
+            // The default on one line (multiline text's lines run together).
+            Some((_, old)) => Prompt::new("Enter new text", Accept::TEXT).default(old.replace('\n', " ").chars().take(40).collect::<String>()),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
