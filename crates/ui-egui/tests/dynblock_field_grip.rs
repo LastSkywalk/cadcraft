@@ -37,7 +37,8 @@ fn harness() -> Harness<'static, CadApp> {
     let mut app = CadApp::new(Session::new(), Services::default());
     app.canvas.zoom_pending = false;
     app.open_bytes("door.dxf", fixture().as_bytes());
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+    // 60 frames a second, so two clicks fall within the double-click delay.
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut CadApp| {
             app.logic(ui.ctx());
             app.ui(ui);
@@ -161,4 +162,42 @@ fn pressing_and_dragging_a_grip_edits_it_too() {
     drag(&mut h, from, to);
     let EntityKind::Line(l) = &h.state().session.doc().unwrap().entity(line).unwrap().kind else { panic!() };
     assert!((l.b.x - 125.0).abs() < 0.5 && (l.b.y - 35.0).abs() < 0.5, "{l:?} log: {:?}", h.state().session.log);
+}
+
+/// Two clicks in quick succession at `p`.
+fn double_click(h: &mut Harness<'_, CadApp>, p: Pos2) {
+    h.event(Event::PointerMoved(p));
+    h.run_steps(2);
+    for _ in 0..2 {
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+}
+
+fn running(h: &Harness<'_, CadApp>) -> Option<String> {
+    h.state().session.running.as_ref().map(|r| r.id.clone())
+}
+
+#[test]
+fn double_clicking_a_block_reference_edits_its_attributes() {
+    let mut h = harness();
+    // The door reference's attribute text: its attributes, the reference already picked.
+    let at = screen(&h, Vec2::new(101.0, 50.5));
+    double_click(&mut h, at);
+    assert_eq!(running(&h).as_deref(), Some("attedit"), "log: {:?}", h.state().session.log);
+    assert!(h.state().session.current_prompt().is_some_and(|p| p.message.contains("WIDTH")), "{:?}", h.state().session.current_prompt());
+}
+
+#[test]
+fn double_clicking_a_dimension_edits_its_text() {
+    let mut h = harness();
+    h.state_mut().session.execute("dimlinear", &json!({"p1": [100, 10], "p2": [130, 10], "at": [115, 25]})).unwrap();
+    h.state_mut().session.set_selection(Vec::new());
+    h.run_steps(3);
+    let at = screen(&h, Vec2::new(115.0, 25.0));
+    double_click(&mut h, at);
+    assert_eq!(running(&h).as_deref(), Some("textedit"), "log: {:?}", h.state().session.log);
 }

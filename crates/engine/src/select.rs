@@ -130,9 +130,21 @@ fn in_text(d: &Drawing, e: &Entity, p: Vec2) -> bool {
         EntityKind::MLeader(m) => {
             m.text.as_ref().is_some_and(|t| in_box(cadcraft_render::layout_mtext_entity(d, t).strokes.into_iter().flatten(), t.rotation, p))
         }
+        // A block reference's visible attributes are hit inside their text boxes, as AutoCAD
+        // picks the reference by its attribute (an elevation mark is mostly its value).
+        EntityKind::Insert(i) => i.attribs.iter().filter(|a| !a.invisible).take(MAX_HIT_ATTRIBS).any(|a| match a.multiline_text() {
+            Some(t) => in_box(cadcraft_render::layout_mtext_entity(d, &t).strokes.into_iter().flatten(), t.rotation, p),
+            None => {
+                let text = Entity { handle: e.handle, common: e.common.clone(), kind: EntityKind::Text(a.text.clone()) };
+                entity_bounds(d, &text, 0).contains(p)
+            }
+        }),
         _ => false,
     }
 }
+
+/// Most attributes of one block reference tested for a pick.
+const MAX_HIT_ATTRIBS: usize = 256;
 
 /// Whether `p` is inside the box around `pts` turned by `angle` (the box of text set at `angle`).
 fn in_box(pts: impl Iterator<Item = Vec2>, angle: f64, p: Vec2) -> bool {
