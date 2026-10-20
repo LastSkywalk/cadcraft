@@ -4,9 +4,9 @@
 //! reference the Edit Block Definition dialog, a polyline PEDIT, anything else the Properties
 //! palette with the object selected.
 
+use cadcraft_engine::Session;
 use cadcraft_engine::doc::{EntityKind, Handle};
 use cadcraft_engine::geom::Vec2;
-use cadcraft_engine::{Input, Session};
 use cadcraft_ui_egui::{CadApp, Services};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::Harness;
@@ -115,41 +115,97 @@ fn mtext_opens_the_multiline_editor_on_its_contents() {
     assert!(h.query_by_label("OK").is_some(), "the editor's OK button");
 }
 
-#[test]
-fn a_dimension_shows_its_measurement_in_the_editor_and_keeps_it_measured() {
-    let mut e = Handle(0);
-    let mut h = harness(|s| e = handle(s.execute("dimlinear", &json!({"p1": [30, 40], "p2": [70, 40], "at": [50, 55]})).unwrap()));
-    let pos = match kind(&h, e) {
+fn dimension(h: &mut Harness<'_, CadApp>) -> (Handle, Vec2) {
+    let e = handle(h.state_mut().session.execute("dimlinear", &json!({"p1": [30, 40], "p2": [70, 40], "at": [50, 55]})).unwrap());
+    h.state_mut().session.set_selection(Vec::new());
+    h.run_steps(2);
+    let pos = match kind(h, e) {
         EntityKind::Dimension(d) => cadcraft_engine::render::dimension_in(h.state().session.doc().unwrap(), &d).text_pos,
         k => panic!("{k:?}"),
     };
-    double_click(&mut h, pos);
-    assert_eq!(running(&h).as_deref(), Some("textedit"), "log: {:?}", h.state().session.log);
-    let shown = h.state().session.editing_mtext().map(|m| m.contents).unwrap_or_default();
-    assert!(shown.starts_with("40"), "the measurement, not <>: {shown:?}");
-    // Text added around the measurement keeps it measured: `<>` in the override.
-    h.state_mut().session.input(Input::Text(format!("{shown} mm"))).unwrap();
-    match kind(&h, e) {
-        EntityKind::Dimension(d) => assert_eq!(d.text, "<> mm"),
+    (e, pos)
+}
+
+fn dim_text(h: &Harness<'_, CadApp>, e: Handle) -> String {
+    match kind(h, e) {
+        EntityKind::Dimension(d) => d.text,
         k => panic!("{k:?}"),
     }
 }
 
+/// Type `text` into the focused editor and finish with its OK button.
+fn type_and_finish(h: &mut Harness<'_, CadApp>, text: &str) {
+    if !text.is_empty() {
+        h.event(Event::Text(text.into()));
+        h.run_steps(2);
+    }
+    ok(h);
+}
+
+fn ok(h: &mut Harness<'_, CadApp>) {
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+}
+
+#[test]
+fn a_dimension_edits_its_text_around_the_measured_value() {
+    let mut h = harness(|_| {});
+    let (e, pos) = dimension(&mut h);
+    double_click(&mut h, pos);
+    assert_eq!(running(&h).as_deref(), Some("textedit"), "log: {:?}", h.state().session.log);
+    // The editor gets the text with `<>` and the measured value to show there.
+    assert_eq!(h.state().session.editing_mtext().map(|m| m.contents).as_deref(), Some("<>"));
+    assert!(h.state().session.editing_measurement().is_some_and(|m| m.starts_with("40")));
+    // The caret is after the value: typed text goes after it; the value stays measured.
+    type_and_finish(&mut h, " mm");
+    assert_eq!(dim_text(&h, e), "<> mm");
+}
+
 #[test]
 fn a_dimension_left_as_it_was_stays_measured() {
-    let mut e = Handle(0);
-    let mut h = harness(|s| e = handle(s.execute("dimlinear", &json!({"p1": [30, 40], "p2": [70, 40], "at": [50, 55]})).unwrap()));
-    let pos = match kind(&h, e) {
-        EntityKind::Dimension(d) => cadcraft_engine::render::dimension_in(h.state().session.doc().unwrap(), &d).text_pos,
-        k => panic!("{k:?}"),
-    };
+    let mut h = harness(|_| {});
+    let (e, pos) = dimension(&mut h);
     double_click(&mut h, pos);
-    assert!(h.state().session.editing_mtext().is_some());
-    key(&mut h, Key::Enter, Modifiers::COMMAND);
-    match kind(&h, e) {
-        EntityKind::Dimension(d) => assert_eq!(d.text, ""),
-        k => panic!("{k:?}"),
-    }
+    type_and_finish(&mut h, "");
+    assert_eq!(dim_text(&h, e), "");
+}
+
+#[test]
+fn backspace_removes_the_measured_value_whole_and_the_text_is_fixed() {
+    let mut h = harness(|_| {});
+    let (e, pos) = dimension(&mut h);
+    double_click(&mut h, pos);
+    key(&mut h, Key::Backspace, Modifiers::NONE);
+    type_and_finish(&mut h, "FIX");
+    assert_eq!(dim_text(&h, e), "FIX");
+}
+
+#[test]
+fn reset_to_measurement_brings_the_measured_value_back() {
+    let mut h = harness(|_| {});
+    let (e, pos) = dimension(&mut h);
+    h.state_mut().session.execute("textedit", &json!({"handle": e.hex(), "text": "200x22=4400"})).unwrap();
+    h.run_steps(2);
+    double_click(&mut h, pos);
+    // A fixed text: nothing measured in it, so Insert Measurement is on.
+    assert_eq!(h.state().session.editing_mtext().map(|m| m.contents).as_deref(), Some("200x22=4400"));
+    h.get_by_label("Reset to Measurement").click();
+    h.run_steps(2);
+    ok(&mut h);
+    assert_eq!(dim_text(&h, e), "", "the measured value alone: no override");
+}
+
+#[test]
+fn insert_measurement_puts_the_measured_value_at_the_caret() {
+    let mut h = harness(|_| {});
+    let (e, pos) = dimension(&mut h);
+    h.state_mut().session.execute("textedit", &json!({"handle": e.hex(), "text": "200x22="})).unwrap();
+    h.run_steps(2);
+    double_click(&mut h, pos);
+    h.get_by_label("Insert Measurement").click();
+    h.run_steps(2);
+    ok(&mut h);
+    assert_eq!(dim_text(&h, e), "200x22=<>");
 }
 
 /// A block "TAG" with an attribute VALUE (default "A") and a square, and a reference to it at

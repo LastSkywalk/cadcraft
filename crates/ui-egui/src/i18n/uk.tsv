@@ -1364,3 +1364,7 @@
 	Tag:	Ім'я:
 	Tag	Ім'я
 	Prompt	Підказка
+	Reset to Measurement	Повернути вимірене значення
+	Insert Measurement	Вставити вимірене значення
+	The text becomes the measured value alone, which follows the dimension when it is stretched	Текст стає лише виміряним значенням, яке змінюється разом із розміром
+	Puts the measured value in at the caret: it follows the dimension, the text around it stays	Вставляє виміряне значення в позицію курсора: воно змінюється разом із розміром, текст навколо залишається

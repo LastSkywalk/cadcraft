@@ -1387,6 +1387,12 @@ impl Session {
         self.running.as_ref().and_then(|r| r.machine.editing_line())
     }
 
+    /// The measured value of the dimension the running command edits in place
+    /// ([`Interactive::editing_measurement`]).
+    pub fn editing_measurement(&self) -> Option<String> {
+        self.running.as_ref().and_then(|r| r.machine.editing_measurement())
+    }
+
     pub fn current_prompt(&self) -> Option<Prompt> {
         if let Some(p) = self.lisp_prompt() {
             return Some(p);

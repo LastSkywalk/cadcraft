@@ -2181,8 +2181,8 @@ fn text_of(k: &EntityKind) -> Option<String> {
 
 /// What the in-place editor shows for an object TEXTEDIT edits: a text or attribute definition
 /// in a one-line box, multiline text, a dimension's or a multileader's text in the multiline
-/// editor. A dimension shows its measurement where its text has `<>` (the measured text, for
-/// [`TextEditM`] to turn back into `<>`).
+/// editor. A dimension's text keeps `<>` where its measurement goes; the measured text comes
+/// with it, for the editor to show there.
 fn in_place(s: &Session, k: &EntityKind) -> (Option<InPlace>, Option<String>) {
     match k {
         EntityKind::Text(t) => (Some(InPlace::Line(t.clone())), None),
@@ -2195,11 +2195,11 @@ fn in_place(s: &Session, k: &EntityKind) -> (Option<InPlace>, Option<String>) {
             let g = cadcraft_render::dimension_in(d, &plain);
             let measured = g.mtext;
             let contents = if dm.text.is_empty() {
-                measured.clone()
+                "<>".to_string()
             } else if dm.text.trim().is_empty() {
                 String::new()
             } else {
-                dm.text.replace("<>", &measured)
+                dm.text.clone()
             };
             let style = d.dim_style(&dm.style).map(|st| st.text_style.clone()).unwrap_or_else(|| "Standard".into());
             let m = cadcraft_doc::MText {
@@ -2220,9 +2220,12 @@ fn in_place(s: &Session, k: &EntityKind) -> (Option<InPlace>, Option<String>) {
     }
 }
 
-/// The text a dimension's editor gave, with its measurement turned back into `<>`.
+/// A dimension's new text with its measurement as `<>`: as given when it has `<>` (the
+/// editor's), else (typed) the measured value in it turned back into `<>`.
 fn with_measurement(text: &str, measured: &str) -> String {
-    if text == measured {
+    if text.contains("<>") {
+        text.to_string()
+    } else if text == measured {
         "<>".into()
     } else if !measured.is_empty() && text.contains(measured) {
         text.replacen(measured, "<>", 1)
@@ -2299,6 +2302,9 @@ impl Interactive for TextEditM {
             (Some(_), Some(InPlace::Line(t))) => Some(t.clone()),
             _ => None,
         }
+    }
+    fn editing_measurement(&self) -> Option<String> {
+        self.h.as_ref().and(self.measured.clone())
     }
     fn prompt(&self, _s: &Session) -> Prompt {
         if self.mode {

@@ -13,6 +13,8 @@ use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Shape, Stroke, TextFo
 use crate::CadApp;
 use crate::theme::Tokens;
 
+mod measure;
+
 /// Smallest and largest size of the text in the box, in points: the box stays readable at any zoom.
 const MIN_PX: f32 = 13.0;
 const MAX_PX: f32 = 36.0;
@@ -38,6 +40,13 @@ struct State {
     caret: Option<usize>,
     /// The text box has had the keyboard focus once (it takes it when it opens).
     focused: bool,
+    /// A dimension's measured value (plain text), when its text is edited.
+    measured: Option<String>,
+    /// Where the measured value is in the text (characters), shown gray; `None`: the text is
+    /// fixed.
+    value: Option<(usize, usize)>,
+    /// The text `value` was last placed in.
+    seen: String,
 }
 
 fn state_id() -> egui::Id {
@@ -77,8 +86,21 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
                 fmt.base_font = f;
             }
         }
+        // A dimension: its measurement where the text has `<>`.
+        let measured = app.session.editing_measurement().map(|m| Formatted::from_contents(&m).text().to_string());
+        let mut value = None;
+        if let Some(m) = &measured
+            && let Some(b) = fmt.text().find("<>")
+        {
+            let at = fmt.text()[..b].chars().count();
+            let typing = fmt.fmt_at(at);
+            let text = measure::splice(fmt.text(), (at, at + 2), m);
+            fmt.set_text(&text, &typing);
+            value = Some((at, at + m.chars().count()));
+        }
         let caret = Some(fmt.len());
-        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret, focused: false }
+        let seen = fmt.text().to_string();
+        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret, focused: false, measured, value, seen }
     });
     let base_h = if mt.height > 0.0 { mt.height } else { 0.2 };
     let px = ((base_h * scale) as f32).clamp(MIN_PX, MAX_PX);
@@ -99,9 +121,11 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
             ui.set_width(width);
             let y0 = ui.cursor().top();
             toolbar(ui, &mut st, base_h);
+            follow_value(&mut st);
             ruler(ui, &mut st, px, width, base_h);
             st.top = ui.cursor().top() - y0;
             text_box(ui, &mut st, base_h, px, width, &t);
+            follow_value(&mut st);
             ui.horizontal(|ui| {
                 ui.add_space(4.0);
                 if ui.button(crate::tl!("OK")).clicked() {
@@ -110,6 +134,7 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
                 if ui.button(crate::tl!("Cancel")).clicked() {
                     done = Done::Cancel;
                 }
+                measurement_buttons(ui, &mut st);
                 let finish = if ui.ctx().os().is_mac() { crate::tl!("⌘↩ to finish") } else { crate::tl!("Ctrl+Enter to finish") };
                 ui.label(RichText::new(finish).small().color(t.text_dim));
             });
@@ -129,6 +154,12 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
             // The editor holds the whole contents: one input, then Enter ends MTEXT's text entry.
             // TEXTEDIT takes the text as it is, even emptied.
             let editing = app.session.running.as_ref().is_some_and(|r| r.id == "textedit");
+            // A dimension's measured value goes back as `<>`.
+            if let Some((a, b)) = st.value {
+                let typing = st.fmt.fmt_at(a);
+                let text = measure::splice(st.fmt.text(), (a, b), "<>");
+                st.fmt.set_text(&text, &typing);
+            }
             if !st.fmt.is_empty() || editing {
                 let _ = app.session.input(cadcraft_engine::Input::Text(st.fmt.to_contents()));
             }
@@ -140,6 +171,55 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
             ctx.data_mut(|d| d.remove::<State>(state_id()));
             app.session.cancel();
         }
+    }
+}
+
+/// Keep the measured value's place after an edit (one that reaches into it removes it).
+fn follow_value(st: &mut State) {
+    if st.fmt.text() == st.seen {
+        return;
+    }
+    if let Some(v) = st.value {
+        let (text, value, caret) = measure::follow(&st.seen, st.fmt.text(), v);
+        if text != st.fmt.text() {
+            let typing = st.typing.clone();
+            st.fmt.set_text(&text, &typing);
+        }
+        st.value = value;
+        if caret.is_some() {
+            st.caret = caret;
+        }
+    }
+    st.seen = st.fmt.text().to_string();
+}
+
+/// A dimension's buttons: back to the measured value alone, or the measured value put in at the
+/// caret (when the text is fixed).
+fn measurement_buttons(ui: &mut egui::Ui, st: &mut State) {
+    let Some(m) = st.measured.clone() else { return };
+    ui.separator();
+    let reset = ui
+        .button(crate::tl!("Reset to Measurement"))
+        .on_hover_text(crate::tl!("The text becomes the measured value alone, which follows the dimension when it is stretched"));
+    if reset.clicked() {
+        st.fmt.set_text(&m, &CharFmt::default());
+        st.value = Some((0, m.chars().count()));
+        st.seen = st.fmt.text().to_string();
+        st.caret = Some(m.chars().count());
+        st.focused = false;
+    }
+    let insert = ui
+        .add_enabled(st.value.is_none(), egui::Button::new(crate::tl!("Insert Measurement")))
+        .on_hover_text(crate::tl!("Puts the measured value in at the caret: it follows the dimension, the text around it stays"));
+    if insert.clicked() {
+        let at = st.sel.0.min(st.sel.1).min(st.fmt.len());
+        let typing = st.typing.clone();
+        let text = measure::splice(st.fmt.text(), (at, at), &m);
+        st.fmt.set_text(&text, &typing);
+        st.value = Some((at, at + m.chars().count()));
+        st.seen = st.fmt.text().to_string();
+        st.caret = Some(at + m.chars().count());
+        st.focused = false;
     }
 }
 
@@ -390,14 +470,17 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
         s.store(ui.ctx(), id);
     }
     let fmt = st.fmt.clone();
+    let value = st.value;
     let default_color = t.text;
+    // The measured value's background (AutoCAD shows it as a gray field).
+    let value_bg = Color32::from_rgba_unmultiplied(140, 140, 140, 90);
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| -> Arc<egui::Galley> {
         let mut job = LayoutJob::default();
         job.wrap.max_width = wrap;
         let s = text.as_str();
         let mut run = String::new();
-        let mut cur: Option<CharFmt> = None;
-        let flush = |job: &mut LayoutJob, run: &mut String, f: &CharFmt| {
+        let mut cur: Option<(CharFmt, bool)> = None;
+        let flush = |job: &mut LayoutJob, run: &mut String, (f, in_value): &(CharFmt, bool)| {
             if run.is_empty() {
                 return;
             }
@@ -413,13 +496,14 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
                     underline: if f.underline { Stroke::new(1.0, color) } else { Stroke::NONE },
                     // The editor has one weight of each font: bold is shown wider.
                     extra_letter_spacing: if f.bold { size * 0.06 } else { 0.0 },
+                    background: if *in_value { value_bg } else { Color32::TRANSPARENT },
                     ..TextFormat::default()
                 },
             );
             run.clear();
         };
         for (i, c) in s.chars().enumerate() {
-            let f = fmt.fmt_at(i);
+            let f = (fmt.fmt_at(i), value.is_some_and(|(a, b)| i >= a && i < b));
             if cur.as_ref() != Some(&f) {
                 if let Some(p) = &cur {
                     flush(&mut job, &mut run, p);
@@ -454,6 +538,13 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
     if let Some(r) = out.cursor_range {
         let (a, b) = (r.primary.index.0, r.secondary.index.0);
         st.sel = (a, b);
+        // The caret doesn't stop inside the measured value.
+        if a == b
+            && let Some(v) = st.value
+            && measure::outside(a, v) != a
+        {
+            st.caret = Some(measure::outside(a, v));
+        }
         if a == b {
             if out.response.changed() {
                 st.typing_at = a;

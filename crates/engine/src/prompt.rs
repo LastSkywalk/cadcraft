@@ -241,6 +241,11 @@ pub trait Interactive: Send {
     fn editing_line(&self) -> Option<cadcraft_doc::Text> {
         None
     }
+    /// The measured value of the dimension whose text is edited (MTEXT contents): where the
+    /// edited contents have `<>`, the editor shows this and gives `<>` back.
+    fn editing_measurement(&self) -> Option<String> {
+        None
+    }
 }
 
 /// See [`Interactive::drag`].
