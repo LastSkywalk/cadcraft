@@ -162,3 +162,4 @@ our output in AutoCAD black-box.
 | 2026-10-11 | minor | DXF (ASCII and binary) and DWG saved at 2000–2018, 2018 by default (#421) |
 | 2026-10-10 | minor | WIPEOUT and gradients written since #147/#162; other save losses remain (#201, #204, #208, #209, #213, #223) |
 | 2026-10-10 | major | First file-format parity doc: DWG and DXF version by version, per-object read/write, other formats |
+| 2026-10-21 | minor | Dynamic block objects keep the form they were read in: only a drawing read from a DWG has them rewritten in AutoCAD's form on a DXF save (`bridge_form`), a DXF drawing's are written as read |

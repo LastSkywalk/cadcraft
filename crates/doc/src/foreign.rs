@@ -71,6 +71,9 @@ pub struct Foreign {
     /// surfaces, which from 2013 on those entities don't carry themselves: each `ACDSRECORD`
     /// names its entity with a 320 handle (see [`Foreign::data_store_entities`]).
     pub data_store: Vec<RawTag>,
+    /// The kept dynamic block objects are as the DWG bridge renders them in DXF (the drawing was
+    /// read from a DWG), not as AutoCAD writes them: a DXF save turns them into AutoCAD's form.
+    pub bridge_form: bool,
 }
 
 impl Foreign {

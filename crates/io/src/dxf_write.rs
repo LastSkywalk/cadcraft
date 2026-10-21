@@ -1741,10 +1741,12 @@ pub fn write(d: &Drawing) -> String {
 }
 
 /// The drawing's DXF tags, declaring `version` in `$ACADVER`, with dynamic block objects in the
-/// form AutoCAD reads ([`crate::dxf_acad_form`]).
+/// form AutoCAD reads ([`crate::bridge_form`]).
 pub fn tags(d: &Drawing, version: Version) -> Vec<Tag> {
     let mut t = tags_for(d, version, version);
-    crate::dxf_acad_form::normalize(&mut t);
+    if d.foreign.bridge_form {
+        crate::bridge_form::to_autocad(&mut t);
+    }
     t
 }
 
@@ -1752,20 +1754,8 @@ pub fn tags(d: &Drawing, version: Version) -> Vec<Tag> {
 /// version's (MULTILEADER from 2007).
 pub(crate) fn dwg_bridge(d: &Drawing, dwg: Version) -> String {
     let mut tags = tags_for(d, Version::R2000, dwg);
-    bridge_markers(&mut tags);
+    crate::bridge_form::to_bridge(&mut tags);
     cadcraft_dxf::write_ascii(&tags)
-}
-
-/// Subclass markers the DWG bridge knows by another spelling (it matches them exactly):
-/// AutoCAD writes a dynamic block lookup parameter's as `AcDbBlockLookUpParameter`, the bridge
-/// reads `AcDbBlockLookupParameter`; otherwise the parameter loses its name and its lookup
-/// action in the DWG, and AutoCAD's lookups stop working.
-fn bridge_markers(tags: &mut [Tag]) {
-    for t in tags.iter_mut().filter(|t| t.code == 100) {
-        if t.str().trim().eq_ignore_ascii_case("AcDbBlockLookupParameter") {
-            *t = Tag::s(100, "AcDbBlockLookupParameter");
-        }
-    }
 }
 
 /// The drawing's DXF tags, declaring `version` in `$ACADVER`, with what `target` (the version the

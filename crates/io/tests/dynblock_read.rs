@@ -536,3 +536,28 @@ fn dragging_a_distance_grip_changes_the_distance() {
     assert!(drag_grip(&mut d, h("30"), 2, GripPart::End, Vec2::new(130.0, 0.0)).is_err(), "not a reference");
     assert_eq!(d, before);
 }
+
+/// The stretch action's connection groups (92/93 ids, 301/302 names) as a DXF save wrote them.
+fn stretch_connections(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let at = lines.iter().position(|l| *l == "AcDbBlockStretchAction").unwrap();
+    lines[at + 1..].chunks(2).take(4).map(|p| format!("{} {}", p[0], p[1])).collect()
+}
+
+#[test]
+fn a_dxf_drawing_keeps_its_dynamic_block_objects_as_read() {
+    // The fixture lists the stretch action's ids, then its names; a drawing read from a DXF
+    // is written as it was read.
+    let d = read_dxf(dxf(&fixture()).as_bytes()).unwrap();
+    assert!(!d.foreign.bridge_form);
+    assert_eq!(stretch_connections(&write_dxf(&d)), ["92 2", "93 2", "301 EndXDelta", "302 EndYDelta"]);
+}
+
+#[test]
+fn a_dwg_drawings_dynamic_block_objects_are_saved_in_autocads_form() {
+    // Read from a DWG (the bridge's form): the DXF save interleaves ids and names, as AutoCAD
+    // writes them.
+    let mut d = read_dxf(dxf(&fixture()).as_bytes()).unwrap();
+    std::sync::Arc::make_mut(&mut d.foreign).bridge_form = true;
+    assert_eq!(stretch_connections(&write_dxf(&d)), ["92 2", "301 EndXDelta", "93 2", "302 EndYDelta"]);
+}

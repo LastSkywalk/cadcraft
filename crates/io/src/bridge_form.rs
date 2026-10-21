@@ -1,8 +1,11 @@
-//! Dynamic block objects in the form AutoCAD's DXF reader takes. A drawing read from a DWG keeps
-//! them as the DWG bridge wrote them, and AutoCAD rejects a few of its groups outright
-//! ("Unexpected DXF group code", the whole file fails to open), so a DXF CADCraft saves writes
-//! them as AutoCAD writes them itself (#1321). Measured against AutoCAD's own DXF of the same
-//! drawings:
+//! The two DXF forms of dynamic block objects: the DWG bridge's and AutoCAD's. A drawing keeps
+//! its objects in the form it was read in ([`Foreign::bridge_form`]), and each writer gives its
+//! reader the form that reader takes: a DXF save turns a DWG's objects into AutoCAD's form
+//! ([`to_autocad`]), as AutoCAD rejects a few of the bridge's groups outright ("Unexpected DXF
+//! group code", the whole file fails to open, #1321); a DWG save gives the bridge the spellings
+//! it matches ([`to_bridge`]). A drawing read from a DXF is written as it was read.
+//!
+//! What [`to_autocad`] changes, measured against AutoCAD's own DXF of the same drawings:
 //!
 //! - an evaluation expression with no value has no value group (the bridge writes `70 -9999`);
 //!   a user parameter's empty value is `309 AcDbEvalVariant NULL = -9999`;
@@ -16,7 +19,7 @@
 //! - an associative variable lists its dependencies after their count (the bridge writes the
 //!   count alone): each dependency it owns, with its index.
 //!
-//! The DWG bridge reads the bridge's own form, so this is for DXF output only.
+//! [`Foreign::bridge_form`]: cadcraft_doc::Foreign::bridge_form
 
 use cadcraft_dxf::{Tag, Value};
 
@@ -29,8 +32,20 @@ fn is_marker(t: &Tag, name: &str) -> bool {
     t.code == 100 && t.str() == name
 }
 
+/// Subclass markers the DWG bridge knows by another spelling (it matches them exactly):
+/// AutoCAD writes a dynamic block lookup parameter's as `AcDbBlockLookUpParameter`, the bridge
+/// reads `AcDbBlockLookupParameter`; otherwise the parameter loses its name and its lookup
+/// action in the DWG, and AutoCAD's lookups stop working.
+pub(crate) fn to_bridge(tags: &mut [Tag]) {
+    for t in tags.iter_mut().filter(|t| t.code == 100) {
+        if t.str().trim().eq_ignore_ascii_case("AcDbBlockLookupParameter") {
+            *t = Tag::s(100, "AcDbBlockLookupParameter");
+        }
+    }
+}
+
 /// Rewrite the dynamic block objects among `tags` (a whole file) in AutoCAD's form.
-pub(crate) fn normalize(tags: &mut Vec<Tag>) {
+pub(crate) fn to_autocad(tags: &mut Vec<Tag>) {
     if !tags.iter().any(|t| t.code == 100 && matches!(t.str().as_str(), "AcDbEvalExpr" | "AcDbAssocAction" | "AcDbAssocDependency")) {
         return;
     }
@@ -252,7 +267,7 @@ mod tests {
             (170, "5"),
             (0, "ENDSEC"),
         ]);
-        normalize(&mut t);
+        to_autocad(&mut t);
         let c = codes(&t);
         let s = |a: &[(i32, &str)]| a.iter().map(|(c, v)| (*c, (*v).to_string())).collect::<Vec<_>>();
         assert_eq!(
@@ -271,7 +286,7 @@ mod tests {
     fn other_records_are_untouched() {
         let src = tags(&[(0, "LINE"), (100, "AcDbEntity"), (70, "-9999"), (0, "ENDSEC")]);
         let mut t = src.clone();
-        normalize(&mut t);
+        to_autocad(&mut t);
         assert_eq!(t, src);
     }
 }
