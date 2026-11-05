@@ -565,7 +565,15 @@ pub(super) fn polyline_entity(recs: &[(String, Vec<Tag>)], i: &mut usize, t: &T)
 }
 
 /// The ATTRIB records after an INSERT, advancing `i` past them and their SEQEND.
-pub(super) fn insert_attribs(recs: &[(String, Vec<Tag>)], i: &mut usize, ins_layer: &str) -> Vec<Attrib> {
+/// `fields` gives each its field; `host` is the INSERT's handle, which a field reading the
+/// reference itself names.
+pub(super) fn insert_attribs(
+    recs: &[(String, Vec<Tag>)],
+    i: &mut usize,
+    ins_layer: &str,
+    fields: &mut crate::dxf_attrib_field::FieldIndex,
+    host: Option<Handle>,
+) -> Vec<Attrib> {
     let mut attribs = Vec::new();
     while let Some((k2, t2)) = recs.get(*i) {
         if k2 == "ATTRIB" {
@@ -579,6 +587,7 @@ pub(super) fn insert_attribs(recs: &[(String, Vec<Tag>)], i: &mut usize, ins_lay
                 text.value.clone_from(&m.read_as);
             }
             attribs.push(Attrib {
+                field: fields.attrib_field(t2, host),
                 tag: own.s(2).unwrap_or_default(),
                 text,
                 invisible: own.i(70).unwrap_or(0) & 1 != 0,

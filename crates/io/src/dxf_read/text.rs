@@ -168,6 +168,7 @@ pub(super) fn attdef(tags: &[Tag], c: &Common) -> Attrib {
         text.value.clone_from(&m.read_as);
     }
     Attrib {
+        field: None,
         tag: own.s(2).unwrap_or_default(),
         text,
         invisible: own.i(70).unwrap_or(0) & 1 != 0,

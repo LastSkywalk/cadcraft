@@ -75,6 +75,11 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("blocks.reference.grip", "Drag Dynamic Grip", dyngrip::run_grip)
             .params("{handle, node (the parameter's graph id), part: base|end|at, to: [x,y] (drawing coordinates)} → {properties}: a distance's arrow changes the distance (snapped to its values), a position's square moves it")
             .enabled(has_doc),
+        CommandSpec::new("updatefield", "Update Fields", run_updatefield)
+            .menu(&["Tools", "Update Fields"])
+            .params("{handles? (default: every object)} → {updated}: fields of block attributes (dynamic block values, expressions) and table formulas evaluated again")
+            .enabled(has_doc)
+            .interactive(|_| Ok(Box::new(super::machines::SelectRun::new("updatefield", "UPDATEFIELD")))),
         CommandSpec::new("purge", "Purge", purge::run)
             .alias(&["pu", "-purge"])
             .params("{type?: all|blocks|dimstyles|groups|layers|linetypes|mleaderstyles|tablestyles|textstyles|zerolength|emptytext (default all: every named type), names?: \"A*,B\" (default *)} → purged")
@@ -310,6 +315,7 @@ fn insert_scaled(
             }
             t.value = attedit::value_for(values, &ad.tag).unwrap_or_else(|| ad.text.value.clone());
             ins.attribs.push(Attrib {
+                field: None,
                 tag: ad.tag.clone(),
                 text: t,
                 invisible: ad.invisible,
@@ -403,6 +409,7 @@ fn insert_json(s: &mut Session, p: &Value, cmd: &str, grid: Grid) -> Result<Valu
 fn attdef_kind(s: &Session, tag: &str, prompt: &str, default: &str, at: Vec2, height: f64, invisible: bool) -> EntityKind {
     let style = s.doc().map(|d| d.header.str("TEXTSTYLE", "Standard")).unwrap_or_else(|_| "Standard".into());
     EntityKind::AttDef(Attrib {
+        field: None,
         tag: tag.to_ascii_uppercase(),
         text: Text {
             insert: v3(at),
@@ -502,6 +509,32 @@ fn run_reference_set(s: &mut Session, p: &Value) -> Result<Value> {
     let properties = cadcraft_doc::dynblock::custom_properties(&d, h).map(|(_, p)| p).unwrap_or_default();
     *s.doc_mut()? = d;
     Ok(json!({ "properties": properties }))
+}
+
+/// Evaluate fields again (one undo step): the fields of the block references' attributes and the
+/// formulas of the tables among `handles`, or of every object when none are given.
+fn run_updatefield(s: &mut Session, p: &Value) -> Result<Value> {
+    let given = p.get("handles").is_some_and(|v| !v.is_null()) || p.get("handle").is_some_and(|v| !v.is_null());
+    let hs = if given { Some(targets(s, p)?) } else { None };
+    let n = update_fields(s, hs)?;
+    Ok(json!({ "updated": n, "message": format!("{n} field(s) updated.") }))
+}
+
+/// Evaluate fields again (UPDATEFIELD, REGEN): the attributes' fields of the block references
+/// `hs`, or of every one, and the formulas of those tables; how many changed.
+pub(crate) fn update_fields(s: &mut Session, hs: Option<Vec<Handle>>) -> Result<usize> {
+    let mut n = 0;
+    if hs.is_some() || s.doc().is_ok_and(cadcraft_doc::field::needs_update) {
+        let mut d = s.doc()?.clone();
+        n = match &hs {
+            Some(hs) => cadcraft_doc::field::update_inserts(&mut d, hs),
+            None => cadcraft_doc::field::update_all(&mut d),
+        };
+        if n > 0 {
+            *s.doc_mut()? = d;
+        }
+    }
+    Ok(n + super::table::recalc(s, hs)?)
 }
 
 // ---------------- interactive ----------------

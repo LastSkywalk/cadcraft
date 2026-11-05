@@ -93,6 +93,7 @@ fn spline_leader_with_block_content_and_attributes() {
     blk.entities.push(Entity::new(
         Handle(0x201),
         EntityKind::AttDef(Attrib {
+            field: None,
             tag: "NUM".into(),
             text: tag_text,
             invisible: false,
@@ -114,6 +115,7 @@ fn spline_leader_with_block_content_and_attributes() {
     let EntityKind::Text(mut placed) = k else { unreachable!() };
     placed.value = "42".into();
     ins.attribs.push(Attrib {
+        field: None,
         tag: "NUM".into(),
         text: placed,
         invisible: false,

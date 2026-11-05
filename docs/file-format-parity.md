@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (R2000 DXF CLASS records without instance counts, so AutoCAD LT 2026 opens them) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (block attribute fields read into a model, saved and evaluated again) · **Target:** Autodesk AutoCAD 2027
 
 Every format AutoCAD 2027 reads or writes, with CADCraft's support, fidelity and tests. Work
 items are in [gaps.md](gaps.md#file-formats); the weighted score feeds
@@ -99,6 +99,7 @@ on read with a note, so such files no longer exceed the DXF limit (#1482). **DWG
 | Objects: VISUALSTYLE, PLOTSETTINGS, materials, field objects and other unmodelled objects | kept raw (#528) | written back as read; a proxy object (ACAD_PROXY_OBJECT) keeps its class: its group 91 is renumbered to the written CLASSES, which keep the class it names, and one whose number names no class is dropped (#1812) | not editable |
 | Foreign xdata, extension dictionaries, reactors, unmodelled objects, colour books | kept raw (#528); an entity's xdata is part of the entity, so COPY, MIRROR, ARRAY and paste keep it on the copies (EXPLODE pieces don't) | written back, handles remapped, references to deleted objects dropped | through DWG: xdata on table records and blocks, entity colour books and reactors, custom-class objects lost (acadrust) |
 | Objects: dynamic block data (ACAD_EVALUATION_GRAPH, BLOCK…PARAMETER, BLOCK…ACTION, grips) | read into a model (`dynblock`, `blocks.dynamic`): parameters, visibility states, value sets, stretch and lookup actions; references: their dynamic block, values and custom properties (`blocks.reference`, Properties ▸ Custom, read-only); kept raw (#528) | written back as read; a changed visibility state is written as AutoCAD writes it (a new anonymous block with its `AcDbBlockRepBTag`, the objects' `AcDbBlockRepETag`, the reference's representation data) | visibility states (and lookups that set only them) can be changed (`blocks.reference.set`, Properties ▸ Custom); distances, positions and the actions they drive not yet; DWG open and save keep it too (checked with an AutoCAD dynamic block) |
+| Fields of block attributes (FIELD, `ACAD_FIELD`, FIELDLIST) | read into a model (#1321): the field tree, the objects it reads (its own reference as itself, so a copy reads the copy), its cached value | written from 2004 as AutoCAD writes them, the field list brought up to date | evaluated again when the reference changes (UPDATEFIELD, REGEN): dynamic parameter values, block curve lengths (`Object(…,1)`; another read mode keeps its value), `AcExpr` (whole numbers kept apart from reals, `^` from left to right, a sign binding tighter than `^`, the functions AutoCAD has — checked expression by expression in AutoCAD 2024), `_text`, number and case formats — checked field by field against AutoCAD on rebar drawings with dynamic blocks; a caret in a field's code or value is written as `^ `; numbers show in decimal units whatever `%lu` asks for (scientific `%lu1` aside): engineering, architectural and fractional (`%lu3`–`%lu5`) are not formatted yet; other evaluators keep their value; a typed value replaces the field; fields of TEXT/MTEXT/ATTDEF are kept raw |
 | Handles and owners | entity handles kept; others regenerated | consistent | stable across CADCraft re-saves (#495); other programs' table and object handles renumbered once |
 
 **DXF ≈ 50% read, ≈ 30% write** (estimated; weights: common 2D entities 50%, annotation objects
@@ -140,6 +141,7 @@ our output in AutoCAD black-box.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | minor | Block attribute fields read, saved and evaluated again after a dynamic block edit, UPDATEFIELD or REGEN (#1321) |
 | 2026-10-30 | minor | Raster images: the picture is loaded from its file when a drawing opens and drawn on screen and in PNG output (#1756, viewport part; based on #1029) |
 | 2026-10-29 | minor | R2000 DXF: CLASS records written without group 91 (instance count), which came with the 2004 format; AutoCAD LT 2026 stopped responding on every R2000 DXF CADCraft saved (checked black-box in AutoCAD LT 2026) |
 | 2026-10-26 | minor | CC-046: ATTEDIT and -ATTEDIT value changes invalidate derived justified baselines before DXF/DWG export; preserve alignment anchors, unchanged values and Aligned/Fit endpoints. Review follow-up: baseline recomputation preserves insertion elevation independently of alignment elevation. The shared writer correction also applies to justified TEXT. Independent of attribute editor UI; reverting the follow-up restores elevation loss on recomputation, while reverting the value setter restores stale XY baselines. |

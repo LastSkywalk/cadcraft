@@ -78,6 +78,7 @@ pub(crate) fn nested(cyclic: bool) -> Vec<Case> {
 
 fn attribute(tag: &str) -> Attrib {
     Attrib {
+        field: None,
         tag: tag.into(),
         text: Text { insert: Vec3::ZERO, height: 1.0, value: tag.into(), ..text() },
         invisible: false,

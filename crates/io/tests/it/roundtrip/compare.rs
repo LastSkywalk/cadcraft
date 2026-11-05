@@ -245,7 +245,7 @@ fn mtext(expected: &MText, actual: &MText, context: &str) {
 }
 
 fn attrib(expected: &Attrib, actual: &Attrib, context: &str) {
-    let Attrib { tag, text: t, invisible, constant, prompt, props, multiline, modes } = expected;
+    let Attrib { tag, text: t, invisible, constant, prompt, props, multiline, modes, field } = expected;
     equal(tag, &actual.tag, context, "attrib.tag");
     text(t, &actual.text, context);
     equal(invisible, &actual.invisible, context, "attrib.invisible");
@@ -253,6 +253,7 @@ fn attrib(expected: &Attrib, actual: &Attrib, context: &str) {
     equal(prompt, &actual.prompt, context, "attrib.prompt");
     equal(props, &actual.props, context, "attrib.props");
     equal(modes, &actual.modes, context, "attrib.modes");
+    equal(field, &actual.field, context, "attrib.field");
     match (multiline, &actual.multiline) {
         (Some(a), Some(b)) => {
             equal(&a.read_as, &b.read_as, context, "attrib.read_as");

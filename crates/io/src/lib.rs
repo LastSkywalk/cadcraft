@@ -5,6 +5,7 @@
 /// What a DXF file holds that CADCraft doesn't model, kept and written back (#528).
 mod dxf_raw;
 
+mod dxf_attrib_field;
 /// XCLIP boundaries as SPATIAL_FILTER objects.
 mod dxf_clip;
 mod dxf_ext;

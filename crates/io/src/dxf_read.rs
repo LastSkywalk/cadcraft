@@ -19,7 +19,7 @@ mod dimassoc;
 mod document;
 mod entities;
 mod hatch;
-mod objects;
+pub(crate) mod objects;
 mod tables;
 mod text;
 
@@ -61,6 +61,8 @@ struct Rx {
     block_arrays: HashMap<String, cadcraft_doc::ArrayParams>,
     /// LAYER record handle (upper case) → layer name (VIEWPORT group 331/341 frozen layers).
     layers: HashMap<String, String>,
+    /// The OBJECTS section's fields, for block attributes.
+    fields: crate::dxf_attrib_field::FieldIndex,
 }
 
 /// Read a DXF file into a drawing.
@@ -87,7 +89,7 @@ fn read_budgeted(bytes: &[u8], mut table_cells_left: usize) -> Result<Drawing> {
     d.layouts.clear();
     // A file without $INSUNITS declares no units (#1209); only new drawings take the template's.
     d.header.set_i64("INSUNITS", 0);
-    let mut rx = Rx { pstyles: plot_style_names(&secs), ..Rx::default() };
+    let mut rx = Rx { pstyles: plot_style_names(&secs), fields: crate::dxf_attrib_field::index(&secs), ..Rx::default() };
     let mut blocks: Vec<BlockDef> = Vec::new();
     let mut layout_objs: Vec<LayoutDef> = Vec::new();
     let mut entities = Vec::new();
@@ -152,6 +154,12 @@ pub fn entity_from_groups(kind: &str, tags: &[Tag]) -> Option<(Common, EntityKin
     let mut tags = tags.to_vec();
     mtext_dxf::map_text_groups(kind, &mut tags, mtext_dxf::encode_line);
     entity(&kind.to_ascii_uppercase(), &tags)
+}
+
+/// The extension dictionary handle of a record: the handle after `102 {ACAD_XDICTIONARY`.
+pub(crate) fn xdict_handle(tags: &[Tag]) -> Option<String> {
+    let i = tags.iter().position(|t| t.code == 102 && t.str().trim() == "{ACAD_XDICTIONARY")?;
+    tags.get(i + 1..).unwrap_or(&[]).iter().find(|t| t.code == 360).map(|t| t.str().trim().to_ascii_uppercase())
 }
 
 #[cfg(test)]

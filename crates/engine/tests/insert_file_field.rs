@@ -43,6 +43,7 @@ fn read(bytes: &[u8], _name: &str) -> Result<Drawing, String> {
         valign: Default::default(),
     };
     let def = Attrib {
+        field: None,
         tag: "NUMBER".into(),
         text,
         invisible: false,

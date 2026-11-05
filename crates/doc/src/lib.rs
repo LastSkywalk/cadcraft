@@ -43,6 +43,7 @@ pub use xclip::{ClipBoundary, MAX_CLIP_VERTICES};
 
 /// File data CADCraft doesn't model, kept for saving (#528).
 pub mod dynblock;
+pub mod field;
 pub mod foreign;
 
 #[derive(Debug, thiserror::Error)]

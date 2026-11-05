@@ -272,6 +272,7 @@ fn block_definition_properties_and_constant_attdefs_roundtrip() {
         valign: VAlign::Baseline,
     };
     let attdef = |tag: &str, invisible: bool, constant: bool| Attrib {
+        field: None,
         tag: tag.into(),
         text: text.clone(),
         invisible,
@@ -1561,6 +1562,7 @@ fn intl_sample() -> Drawing {
     )
     .unwrap();
     let def = Attrib {
+        field: None,
         tag: "图号".into(),
         text: intl_text("默认"),
         invisible: false,
@@ -1574,6 +1576,7 @@ fn intl_sample() -> Drawing {
     b.entities.push(Entity::new(Handle(0x50), EntityKind::AttDef(def)));
     d.blocks.insert(block.clone(), std::sync::Arc::new(b));
     let att = Attrib {
+        field: None,
         tag: "图号".into(),
         text: intl_text(INTL),
         invisible: false,
@@ -1836,6 +1839,7 @@ fn attdef_prompt_survives_dxf_roundtrip() {
     };
     let attdef = |prompt: &str| {
         EntityKind::AttDef(Attrib {
+            field: None,
             tag: "TAG1".into(),
             text: text.clone(),
             invisible: false,
@@ -2976,4 +2980,28 @@ fn solid_hatch_keeps_angle_scale_and_double_flag() {
     assert!(f("52").is_some_and(|a| (a - 30.0).abs() < 1e-9), "{h:?}");
     assert!(f("41").is_some_and(|s| (s - 2.0).abs() < 1e-12), "{h:?}");
     assert_eq!(group(h, "77"), Some("0"), "{h:?}");
+}
+
+#[test]
+fn a_field_list_names_each_written_field_once() {
+    // A list as some step left it (an entry twice, a null one, one for a field not written, no
+    // entry for another) names the FIELD objects the file holds, once each.
+    let rec = |kind: &str, h: &str| vec![cadcraft_dxf::Tag::s(0, kind), cadcraft_dxf::Tag::s(5, h)];
+    let mut tags: Vec<cadcraft_dxf::Tag> = [rec("FIELD", "A1"), rec("FIELD", "A2"), rec("FIELDLIST", "B0")].concat();
+    tags.extend([
+        cadcraft_dxf::Tag::s(100, "AcDbIdSet"),
+        cadcraft_dxf::Tag::i(90, 4),
+        cadcraft_dxf::Tag::i(99, 0),
+        cadcraft_dxf::Tag::s(330, "A1"),
+        cadcraft_dxf::Tag::s(330, "A1"),
+        cadcraft_dxf::Tag::s(330, "0"),
+        cadcraft_dxf::Tag::s(330, "DEAD"),
+        cadcraft_dxf::Tag::s(100, "AcDbFieldList"),
+    ]);
+    tags.extend(rec("FIELD", "A3"));
+    crate::dxf_raw::list_written_fields(&mut tags);
+    let at = tags.iter().position(|t| t.code == 100 && t.str() == "AcDbIdSet").unwrap();
+    let listed: Vec<String> = tags[at + 1..].iter().take_while(|t| t.code != 100).map(|t| format!("{} {}", t.code, t.str())).collect();
+    assert_eq!(listed, ["90 3", "330 A1", "330 A2", "330 A3"]);
+    assert_eq!(tags.iter().filter(|t| t.code == 100 && t.str() == "AcDbFieldList").count(), 1);
 }

@@ -28,7 +28,7 @@ pub(super) struct Objects {
     wipeout_frame: Option<i64>,
 }
 
-pub(super) const MAX_OBJECTS: usize = 1_000_000;
+pub(crate) const MAX_OBJECTS: usize = 1_000_000;
 
 impl Objects {
     pub(super) fn add(&mut self, kind: &str, tags: &[Tag]) {

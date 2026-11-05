@@ -3,7 +3,8 @@ use super::common::{attrib_common, common, common_x, dim_xdata, layer_and_props,
 use super::ctx::Ctx;
 use super::layout::paper_view;
 use super::{
-    Bounds2, Color, DimKind, Drawing, Entity, EntityKind, Gradient, Handle, HashMap, Hatch, Leader, MLeader, Point, Vec2, Vec3, Version, W, dxf_ext,
+    Bounds2, Color, DimKind, Drawing, Entity, EntityKind, Gradient, Handle, HashMap, Hatch, Leader, MLeader, Point, Tag, Vec2, Vec3, Version, W,
+    dxf_ext,
 };
 
 /// The persistent reactors of boundary objects: each source object of an associative hatch in
@@ -364,7 +365,10 @@ fn write_insert_entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: b
             for a in &i.attribs {
                 let ah = w.h();
                 w.s(0, "ATTRIB");
-                w.s(5, ah);
+                w.s(5, ah.clone());
+                if let Some(f) = a.field.as_ref().filter(|_| cx.target >= Version::R2004) {
+                    attrib_field(w, f, &ah, &e.handle.hex());
+                }
                 w.s(330, e.handle.hex());
                 w.s(100, "AcDbEntity");
                 let (c, base) = attrib_common(d, e, i, a);
@@ -866,4 +870,39 @@ fn hatch_xdata(w: &mut W, h: &Hatch) {
     w.s(1000, "HATCH");
     w.p(1011, h.origin.to3(0.0));
     w.s(1000, h.background.map(Color::name).unwrap_or_default());
+}
+
+/// An attribute's field: its extension dictionary (`102 {ACAD_XDICTIONARY`, written here on the
+/// ATTRIB `attrib`) holds `ACAD_FIELD`, whose `TEXT` entry is the field; those objects go in
+/// OBJECTS ([`W::fields`]). `host` is the block reference the field reads as its own object.
+fn attrib_field(w: &mut W, f: &cadcraft_doc::field::Field, attrib: &str, host: &str) {
+    let (xdict, fields) = (w.h(), w.h());
+    w.group("ACAD_XDICTIONARY", 360, &[xdict.as_str()]);
+    let mut recs = Vec::new();
+    let root = crate::dxf_attrib_field::field_records(f, &fields, host, &mut || w.h(), &mut recs);
+    w.fields.extend([
+        Tag::s(0, "DICTIONARY"),
+        Tag::s(5, xdict.clone()),
+        Tag::s(330, attrib),
+        Tag::s(100, "AcDbDictionary"),
+        Tag::i(280, 1),
+        Tag::i(281, 1),
+        Tag::s(3, "ACAD_FIELD"),
+        Tag::s(360, fields.clone()),
+        Tag::s(0, "DICTIONARY"),
+        Tag::s(5, fields.clone()),
+        Tag::s(102, "{ACAD_REACTORS"),
+        Tag::s(330, xdict.clone()),
+        Tag::s(102, "}"),
+        Tag::s(330, xdict),
+        Tag::s(100, "AcDbDictionary"),
+        Tag::i(280, 1),
+        Tag::i(281, 1),
+        Tag::s(3, "TEXT"),
+        Tag::s(360, root),
+    ]);
+    for (h, t) in recs {
+        w.field_handles.push(h);
+        w.fields.extend(t);
+    }
 }

@@ -46,6 +46,7 @@ fn drawing() -> Drawing {
     let mut d = Drawing::new_metric();
     d.add(&Space::Model, Common::default(), EntityKind::Text(text("10^2 m, A^JB"))).unwrap();
     let attdef = Attrib {
+        field: None,
         tag: "AREA".into(),
         text: text("1^3"),
         invisible: false,

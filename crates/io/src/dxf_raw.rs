@@ -55,12 +55,12 @@ const MAX_DEPTH: usize = 64;
 /// Record types that structure a file: never written as an entity of another type.
 const STRUCTURAL: &[&str] = &["", "SECTION", "ENDSEC", "EOF", "TABLE", "ENDTAB", "BLOCK", "ENDBLK", "SEQEND", "VERTEX", "ATTRIB", "CLASS"];
 
-fn up(s: &str) -> String {
+pub(crate) fn up(s: &str) -> String {
     s.trim().to_ascii_uppercase()
 }
 
 /// A handle as text, normalised (`002a` → `2A`); other text upper-cased.
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     Handle::parse_hex(s).map_or_else(|| up(s), Handle::hex)
 }
 
@@ -70,7 +70,7 @@ fn raw(t: &Tag) -> RawTag {
 
 /// A kept group with the value type its code has (so binary output encodes it right); text that
 /// doesn't parse as that type stays text.
-fn tag(r: &RawTag) -> Tag {
+pub(crate) fn tag(r: &RawTag) -> Tag {
     use cadcraft_dxf::{Kind, Value, kind_of};
     let v = r.value.trim();
     let value = match kind_of(r.code) {
@@ -152,7 +152,7 @@ fn val(tags: &[Tag], code: i32) -> Option<String> {
 }
 
 /// A dictionary's entries: (key, upper-case handle).
-fn entries(tags: &[Tag]) -> Vec<(String, String)> {
+pub(crate) fn entries(tags: &[Tag]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut key: Option<String> = None;
     for t in tags.iter().take_while(|t| t.code < 1000) {
@@ -169,7 +169,7 @@ fn entries(tags: &[Tag]) -> Vec<(String, String)> {
     out
 }
 
-fn is_dictionary(kind: &str) -> bool {
+pub(crate) fn is_dictionary(kind: &str) -> bool {
     kind == "DICTIONARY" || kind == "ACDBDICTIONARYWDFLT"
 }
 
@@ -810,6 +810,80 @@ impl Map<'_> {
     }
 }
 
+/// The kept objects that are written, at the end of OBJECTS: a proxy with its class renumbered by
+/// `renumber`, the field list without its old entries ([`field_list`]).
+fn kept_objects(map: &Map, renumber: &dyn Fn(Option<i64>) -> Option<i64>, out: &mut Vec<Tag>) {
+    for o in map.f.objects.iter().filter(|o| map.alive.contains_key(&o.handle.hex())) {
+        let number = is_proxy(&o.kind).then(|| renumber(class_number(o.tags.iter().map(|r| (r.code, r.value.as_str()))))).flatten();
+        match number {
+            Some(n) => {
+                let mut tags: Vec<Tag> = o.tags.iter().map(tag).collect();
+                set_class_number(&mut tags, n);
+                let o = ForeignObject { tags: tags.iter().map(raw).collect(), ..o.clone() };
+                map.object(&o, out);
+            }
+            None if o.kind.eq_ignore_ascii_case("FIELDLIST") => field_list(map, o, out),
+            None => map.object(o, out),
+        }
+    }
+}
+
+/// The kept field list without the entries it was read with, which [`list_written_fields`] puts
+/// back for the written file. A list kept without its `AcDbIdSet` marker gets one, before its
+/// first subclass marker.
+fn field_list(map: &Map, o: &ForeignObject, out: &mut Vec<Tag>) {
+    let lean = match o.tags.iter().position(|t| t.code == 100 && t.value == "AcDbIdSet") {
+        // The object without its list: its head, then what follows the list.
+        Some(set) => {
+            let tail = o.tags.iter().skip(set + 1).skip_while(|t| matches!(t.code, 90 | 330)).cloned();
+            ForeignObject { handle: o.handle, kind: o.kind.clone(), tags: o.tags.iter().take(set + 1).cloned().chain(tail).collect() }
+        }
+        // Its head (handle, reactors, owner) without the entries it lists, the marker, then the
+        // rest from its first subclass marker on.
+        None => {
+            let at = o.tags.iter().position(|t| t.code == 100).unwrap_or(o.tags.len());
+            let (mut in_group, mut owner) = (false, false);
+            let mut tags: Vec<RawTag> = Vec::new();
+            for t in o.tags.iter().take(at) {
+                match t.code {
+                    102 => in_group = t.value.starts_with('{'),
+                    330 if !in_group && owner => continue,
+                    330 if !in_group => owner = true,
+                    90 if !in_group => continue,
+                    _ => {}
+                }
+                tags.push(t.clone());
+            }
+            tags.push(RawTag { code: 100, value: "AcDbIdSet".into() });
+            tags.extend(o.tags.iter().skip(at).cloned());
+            ForeignObject { handle: o.handle, kind: o.kind.clone(), tags }
+        }
+    };
+    map.object(&lean, out);
+}
+
+/// Every field list of a written file (`tags`) names the FIELD objects the file holds, and only
+/// those: whoever wrote them (the writer for attribute fields, kept objects, copies), each is
+/// listed once, and a field that wasn't written is not.
+pub(crate) fn list_written_fields(tags: &mut Vec<Tag>) {
+    let records = split(tags);
+    let fields: Vec<String> = records.iter().filter(|(k, _, _)| k == "FIELD").filter_map(|(_, _, b)| head(b).handle).collect();
+    let lists: Vec<usize> = records.iter().filter(|(k, _, _)| k == "FIELDLIST").map(|(_, start, _)| *start).collect();
+    // From the last list back, so earlier positions stay valid.
+    for start in lists.into_iter().rev() {
+        let Some(at) = tags.iter().skip(start + 1).take_while(|t| t.code != 0).position(|t| t.code == 100 && t.str() == "AcDbIdSet") else {
+            continue;
+        };
+        let at = start + 1 + at + 1;
+        // The id set it has: everything from the marker to the next subclass marker (AutoCAD
+        // writes its count, 90, and the handles, 330).
+        let end = tags.iter().skip(at).take_while(|t| t.code != 0 && t.code != 100).count() + at;
+        let mut items = vec![Tag::i(90, fields.len() as i64)];
+        items.extend(fields.iter().map(|h| Tag::s(330, h.clone())));
+        tags.splice(at..end, items);
+    }
+}
+
 /// The extras of a written record, if the drawing keeps any for it.
 fn extra_for<'a>(f: &'a Foreign, xd: &XdataOf, rec: &Rec, body: &[Tag], block: &str) -> Option<Cow<'a, ForeignExtra>> {
     match (rec.sec.as_str(), rec.kind.as_str()) {
@@ -976,18 +1050,7 @@ pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing, reactors: &HashMap<Handle
             }
         }
         if r.kind == "ENDSEC" && r.sec == "OBJECTS" {
-            for o in f.objects.iter().filter(|o| map.alive.contains_key(&o.handle.hex())) {
-                let number = is_proxy(&o.kind).then(|| renumber(class_number(o.tags.iter().map(|r| (r.code, r.value.as_str()))))).flatten();
-                match number {
-                    Some(n) => {
-                        let mut tags: Vec<Tag> = o.tags.iter().map(tag).collect();
-                        set_class_number(&mut tags, n);
-                        let o = ForeignObject { tags: tags.iter().map(raw).collect(), ..o.clone() };
-                        map.object(&o, &mut out);
-                    }
-                    None => map.object(o, &mut out),
-                }
-            }
+            kept_objects(&map, &renumber, &mut out);
         }
         for (sec, t) in planned.get(&r.start).into_iter().flatten() {
             let (Some(zero), Some(ub)) = (t.first(), t.get(1..)) else { continue };

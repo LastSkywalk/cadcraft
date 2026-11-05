@@ -7,12 +7,14 @@
 //! `ACAD_ENHANCEDBLOCKDATA` dictionary holds one XRECORD per parameter, keyed by its graph id, with
 //! the value in block coordinates. A reference to the dynamic block itself has the block's values.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use cadcraft_geom::Vec3;
 use serde::Serialize;
 
-use super::{ActionKind, DynamicBlock, ParameterKind, dynamic_block};
+use super::{ActionKind, Cursor, DynamicBlock, ObjectIndex, ParameterKind, block_xdict, dynamic_block, dynamic_block_in, section, sections};
 use crate::foreign::ForeignObject;
 use crate::{Drawing, EntityKind, Handle};
 
@@ -111,8 +113,7 @@ fn value(o: &ForeignObject) -> Option<Value> {
 pub fn reference(d: &Drawing, insert: Handle) -> Option<Reference> {
     let EntityKind::Insert(ins) = &d.entity(insert)?.kind else { return None };
     let objects = objects(d);
-    let rep = d.foreign.entities.get(&insert).and_then(|x| x.xdict).and_then(|x| entry(&objects, x, "AcDbBlockRepresentation"));
-    let Some(rep) = rep else {
+    let Some(rep) = representation(d, &objects, insert) else {
         // No representation: a reference to a dynamic block with its own values.
         return dynamic_block(d, &ins.block)
             .is_some()
@@ -124,8 +125,7 @@ pub fn reference(d: &Drawing, insert: Handle) -> Option<Reference> {
     let definition = d.block(name).filter(|_| kind == "BLOCK_RECORD")?.name.clone();
     dynamic_block(d, &definition)?;
     let mut values = BTreeMap::new();
-    let cache = entry(&objects, rep, "AppDataCache").and_then(|c| entry(&objects, c, "ACAD_ENHANCEDBLOCKDATA"));
-    for (key, h) in cache.map(|c| entries(&objects, c)).unwrap_or_default().into_iter().take(MAX_VALUES) {
+    for (key, h) in enhanced_data(&objects, rep).map(|c| entries(&objects, c)).unwrap_or_default().into_iter().take(MAX_VALUES) {
         if let (Ok(node), Some(v)) = (key.trim().parse::<i32>(), objects.get(&h).and_then(|o| value(o))) {
             values.insert(node, v);
         }
@@ -133,9 +133,173 @@ pub fn reference(d: &Drawing, insert: Handle) -> Option<Reference> {
     Some(Reference { definition, values })
 }
 
+/// The `AcDbBlockRepresentation` dictionary in the extension dictionary of block reference
+/// `insert`, when it has one.
+fn representation(d: &Drawing, objects: &HashMap<Handle, &ForeignObject>, insert: Handle) -> Option<Handle> {
+    d.foreign.entities.get(&insert).and_then(|x| x.xdict).and_then(|x| entry(objects, x, "AcDbBlockRepresentation"))
+}
+
+/// The `ACAD_ENHANCEDBLOCKDATA` dictionary of block representation `rep`: its values, one
+/// XRECORD per parameter keyed by graph id.
+fn enhanced_data(objects: &HashMap<Handle, &ForeignObject>, rep: Handle) -> Option<Handle> {
+    entry(objects, rep, "AppDataCache").and_then(|c| entry(objects, c, "ACAD_ENHANCEDBLOCKDATA"))
+}
+
+/// A parameter's value as a field reads it (`AcObjProp … Parameter(N).Property`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ParamValue {
+    Number(f64),
+    Text(String),
+}
+
+/// Property `property` of parameter `node` of dynamic block reference `insert`, as a field reads
+/// it: a distance (`UpdatedDistance`, `Distance`) in drawing units (the length between the
+/// parameter's points, across for a horizontal constraint and up for a vertical one), a user
+/// parameter's value (`UserVariable`), a visibility state or a lookup value.
+pub fn parameter_value(d: &Drawing, insert: Handle, node: i32, property: &str) -> Option<ParamValue> {
+    Reader::new(d).parameter_value(insert, node, property)
+}
+
+/// Reads the dynamic block references of one state of a drawing, for reading many of them
+/// together (every attribute field of the drawing): the kept objects are indexed once, and each
+/// reference and each dynamic block is read once.
+pub(crate) struct Reader<'a> {
+    d: &'a Drawing,
+    /// The kept objects by handle, indexed when first needed.
+    objects: OnceCell<ObjectIndex<'a>>,
+    /// Each reference read, by handle (`None`: not a dynamic block reference).
+    references: HashMap<Handle, Option<Rc<Reference>>>,
+    /// Each dynamic block read, by its name in upper case (`None`: not a dynamic block).
+    blocks: HashMap<String, Option<Rc<DynamicBlock>>>,
+}
+
+impl<'a> Reader<'a> {
+    pub(crate) fn new(d: &'a Drawing) -> Self {
+        Self { d, objects: OnceCell::new(), references: HashMap::new(), blocks: HashMap::new() }
+    }
+
+    pub(crate) fn drawing(&self) -> &'a Drawing {
+        self.d
+    }
+
+    fn objects(&self) -> &HashMap<Handle, &'a ForeignObject> {
+        &self.objects.get_or_init(|| ObjectIndex::new(self.d)).0
+    }
+
+    /// The dynamic block data of block `name`, as [`dynamic_block`] reads it.
+    fn block(&mut self, name: &str) -> Option<Rc<DynamicBlock>> {
+        let key = name.trim().to_ascii_uppercase();
+        if let Some(m) = self.blocks.get(&key) {
+            return m.clone();
+        }
+        let m = if block_xdict(self.d, name).is_some() {
+            dynamic_block_in(self.d, self.objects.get_or_init(|| ObjectIndex::new(self.d)), name).map(Rc::new)
+        } else {
+            None
+        };
+        self.blocks.insert(key, m.clone());
+        m
+    }
+
+    /// The dynamic block reference `insert` is, as [`reference`] reads it.
+    pub(crate) fn reference(&mut self, insert: Handle) -> Option<Rc<Reference>> {
+        if let Some(r) = self.references.get(&insert) {
+            return r.clone();
+        }
+        let r = self.read_reference(insert).map(Rc::new);
+        self.references.insert(insert, r.clone());
+        r
+    }
+
+    fn read_reference(&mut self, insert: Handle) -> Option<Reference> {
+        let d = self.d;
+        let EntityKind::Insert(ins) = &d.entity(insert)?.kind else { return None };
+        let Some(rep) = representation(d, self.objects(), insert) else {
+            return self.block(&ins.block).is_some().then(|| Reference {
+                definition: d.block(&ins.block).map_or_else(|| ins.block.clone(), |b| b.name.clone()),
+                values: BTreeMap::new(),
+            });
+        };
+        let objects = self.objects();
+        let data = entry(objects, rep, "AcDbRepData").and_then(|h| objects.get(&h).copied())?;
+        let target = data.tags.iter().find(|t| t.code == 340).and_then(|t| Handle::parse_hex(&t.value))?;
+        let (kind, name) = d.foreign.targets.get(&target)?;
+        let definition = d.block(name).filter(|_| kind == "BLOCK_RECORD")?.name.clone();
+        let mut values = BTreeMap::new();
+        for (key, h) in enhanced_data(objects, rep).map(|c| entries(objects, c)).unwrap_or_default().into_iter().take(MAX_VALUES) {
+            if let (Ok(node), Some(v)) = (key.trim().parse::<i32>(), objects.get(&h).and_then(|o| value(o))) {
+                values.insert(node, v);
+            }
+        }
+        self.block(&definition)?;
+        Some(Reference { definition, values })
+    }
+
+    /// The XRECORD reference `insert` keeps parameter `node`'s value in, if it keeps one.
+    fn value_record(&self, insert: Handle, node: i32) -> Option<&'a ForeignObject> {
+        let objects = self.objects();
+        let data = enhanced_data(objects, representation(self.d, objects, insert)?)?;
+        let h = entries(objects, data).into_iter().take(MAX_VALUES).find(|(k, _)| k.trim().parse::<i32>().ok() == Some(node))?.1;
+        objects.get(&h).copied()
+    }
+
+    /// Property `property` of parameter `node` of reference `insert`, as [`parameter_value`]
+    /// reads it.
+    pub(crate) fn parameter_value(&mut self, insert: Handle, node: i32, property: &str) -> Option<ParamValue> {
+        let d = self.d;
+        let r = self.reference(insert)?;
+        let EntityKind::Insert(ins) = &d.entity(insert)?.kind else { return None };
+        let m = self.block(&r.definition)?;
+        let p = m.parameters.iter().find(|p| p.node == node)?;
+        let (sx, sy) = (ins.scale.x.abs(), ins.scale.y.abs());
+        match property.to_ascii_lowercase().as_str() {
+            "updateddistance" | "distance" => {
+                let (b, e) = match (r.values.get(&node), &p.kind) {
+                    (Some(Value::Points { base, end }), _) => (*base, *end),
+                    (_, ParameterKind::Linear { base, end, .. }) => (*base, *end),
+                    _ => {
+                        // A constraint parameter has its points where a linear one has them.
+                        let o = self.objects().get(&p.handle)?;
+                        let secs = sections(&o.tags);
+                        let mut c = Cursor::new(section(&secs, "AcDbBlock2PtParameter"));
+                        (c.point(1010), c.point(1011))
+                    }
+                };
+                let kind = match &p.kind {
+                    ParameterKind::Other { dxf_type } => dxf_type.as_str(),
+                    _ => "",
+                };
+                let v = if kind.contains("HORIZONTAL") {
+                    (e.x - b.x).abs() * sx
+                } else if kind.contains("VERTICAL") {
+                    (e.y - b.y).abs() * sy
+                } else {
+                    (e - b).len() * sx
+                };
+                v.is_finite().then_some(ParamValue::Number(v))
+            }
+            "uservariable" | "value" => {
+                let o = self.value_record(insert, node)?;
+                if let Some(t) = o.tags.iter().find(|t| t.code == 1) {
+                    return Some(ParamValue::Text(t.value.clone()));
+                }
+                o.tags
+                    .iter()
+                    .find(|t| t.code == 40)
+                    .and_then(|t| t.value.trim().parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
+                    .map(ParamValue::Number)
+            }
+            "visibilitystate" => Current { m: &m, values: &r.values }.property(node, "VisibilityState").map(ParamValue::Text),
+            "lookupstring" => Some(ParamValue::Text(Current { m: &m, values: &r.values }.lookup(node).0)),
+            _ => None,
+        }
+    }
+}
+
 /// A number as the drawing shows lengths (LUPREC decimals).
 fn number(d: &Drawing, v: f64) -> String {
-    let prec = usize::try_from(d.header.i64("LUPREC", 4).clamp(0, 8)).unwrap_or(4);
+    let prec = d.header.length_precision();
     format!("{v:.prec$}")
 }
 

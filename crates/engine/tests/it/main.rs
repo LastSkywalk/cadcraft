@@ -8,6 +8,7 @@ mod assoc_array;
 mod attdef_command;
 mod attdisp_attsync;
 mod attedit_prompts;
+mod attrib_fields;
 mod attrib_modes;
 mod attrib_props;
 mod attribute_tools;

@@ -245,7 +245,7 @@ fn write_dimstyles(w: &mut W, d: &Drawing, cx: &mut Ctx, version: Version) {
         w.i(70, 0);
         let v = serde_json::to_value(s).unwrap_or_default();
         let defaults = serde_json::to_value(DimStyle::default()).unwrap_or_default();
-        let mut newer = W { t: Vec::new(), next: 0, pstyles: HashMap::new(), layers: HashMap::new(), reactors: HashMap::new() };
+        let mut newer = W::default();
         for (field, code, kind) in dxf_ext::DIM_CODES {
             let Some(enc) = v.get(*field).and_then(|x| cx.encode(*kind, x)) else { continue };
             // DIMPOST is written even when empty: a reader that defaults a missing one to "<>"
@@ -344,6 +344,10 @@ fn write_classes(w: &mut W, cx: &Ctx, every: &[&Entity]) {
         classes.push(("IMAGEDEF", "AcDbRasterImageDef", 0, false));
         classes.push(("IMAGEDEF_REACTOR", "AcDbRasterImageDefReactor", 1, false));
         classes.push(("RASTERVARIABLES", "AcDbRasterVariables", 0, false));
+    }
+    if cx.target >= Version::R2004 && every.iter().any(|e| matches!(&e.kind, EntityKind::Insert(i) if i.attribs.iter().any(|a| a.field.is_some()))) {
+        classes.push(("FIELD", "AcDbField", 1152, false));
+        classes.push(("FIELDLIST", "AcDbFieldList", 1152, false));
     }
     classes.push(("SCALE", "AcDbScale", 0, false));
     for (dxf_name, cpp, proxy, is_entity) in classes {
@@ -502,6 +506,9 @@ struct ObjectWritePlan<'a> {
     table_styles: &'a [TableStyle],
     mleader_styles: &'a [MLeaderStyle],
     ltype_handles: &'a HashMap<String, String>,
+    /// The field list's handle when the writer makes one: attribute fields were written and the
+    /// drawing keeps no list of its own (`dxf_raw` brings a kept one up to date).
+    field_list: Option<String>,
 }
 
 fn write_layout_objects(w: &mut W, plan: &ObjectWritePlan<'_>) {
@@ -599,6 +606,10 @@ fn write_root_group_objects(
     }
     w.s(3, "ACAD_SCALELIST");
     w.s(350, scale_dict.clone());
+    if let Some(h) = &plan.field_list {
+        w.s(3, "ACAD_FIELDLIST");
+        w.s(350, h.clone());
+    }
     w.s(0, "DICTIONARY");
     w.s(5, group_dict);
     w.s(330, root_dict.clone());
@@ -752,7 +763,27 @@ fn write_objects(w: &mut W, plan: ObjectWritePlan<'_>) {
     write_layout_objects(w, &plan);
     // Raster image definitions.
     w.t.extend(crate::dxf_image::objects(&plan.cx.images, plan.root_dict));
+    write_field_objects(w, plan.field_list, plan.root_dict);
     w.s(0, "ENDSEC");
+}
+
+/// The attribute fields' objects and, when the writer makes it, the field list.
+fn write_field_objects(w: &mut W, field_list: Option<String>, root_dict: &str) {
+    let fields = std::mem::take(&mut w.fields);
+    w.t.extend(fields);
+    let Some(h) = field_list else { return };
+    w.s(0, "FIELDLIST");
+    w.s(5, h);
+    w.s(102, "{ACAD_REACTORS");
+    w.s(330, root_dict);
+    w.s(102, "}");
+    w.s(330, root_dict);
+    w.s(100, "AcDbIdSet");
+    w.i(90, w.field_handles.len() as i64);
+    for f in w.field_handles.clone() {
+        w.s(330, f);
+    }
+    w.s(100, "AcDbFieldList");
 }
 
 fn dimension_block_definitions(
@@ -913,13 +944,7 @@ pub(super) fn tags_for(d: &Drawing, version: Version, target: Version, frozen_34
     let clipped = crate::dxf_clip::prepare(d);
     let d: &Drawing = clipped.as_ref().unwrap_or(d);
     // Structural handles start above every entity handle.
-    let mut w = W {
-        t: Vec::new(),
-        next: d.handseed.max(0x100).saturating_add(0x1000),
-        pstyles: HashMap::new(),
-        layers: HashMap::new(),
-        reactors: hatch_reactors(d),
-    };
+    let mut w = W { next: d.handseed.max(0x100).saturating_add(0x1000), reactors: hatch_reactors(d), ..W::default() };
     // Pre-allocate handles for block records.
     let paper_layouts = d.paper_space_layouts();
     let ms_br = w.h();
@@ -1111,6 +1136,9 @@ pub(super) fn tags_for(d: &Drawing, version: Version, target: Version, frozen_34
     w.s(0, "ENDSEC");
 
     write_entities(&mut w, d, &ms_br, &ps_brs, &cx);
+    // The field list, unless the drawing keeps the one it was read with.
+    let kept_field_list = d.foreign.dictionary.iter().any(|(k, _)| k.eq_ignore_ascii_case("ACAD_FIELDLIST"));
+    let field_list = (!w.field_handles.is_empty() && !kept_field_list).then(|| w.h());
 
     write_objects(
         &mut w,
@@ -1133,6 +1161,7 @@ pub(super) fn tags_for(d: &Drawing, version: Version, target: Version, frozen_34
             table_styles,
             mleader_styles,
             ltype_handles: &ltype_handles,
+            field_list,
         },
     );
 
@@ -1144,6 +1173,7 @@ pub(super) fn tags_for(d: &Drawing, version: Version, target: Version, frozen_34
     // Only a DXF declares the version it is written for: the DWG bridge writes R2000 text for the
     // DWG writer, which keeps SAT-text solids (#2334).
     crate::dxf_raw::finish(&mut w.t, d, &w.reactors, version >= Version::R2013);
+    crate::dxf_raw::list_written_fields(&mut w.t);
     crate::dxf_raw::data_store(&mut w.t, d, target >= Version::R2013);
     add_class_instance_counts(&mut w.t, target);
     mark_xrefs(&mut w.t, d);

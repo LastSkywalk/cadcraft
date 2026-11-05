@@ -104,6 +104,7 @@ impl AttdefM {
         let (h, v) = self.justify;
         let left = h == HAlign::Left && v == VAlign::Baseline;
         s.add_entity(EntityKind::AttDef(Attrib {
+            field: None,
             tag: self.tag.to_uppercase(),
             text: Text {
                 insert: v3(self.at),

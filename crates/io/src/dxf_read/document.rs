@@ -37,7 +37,7 @@ pub(super) fn parse_entities(
             }
             "INSERT" if t.i(66) == Some(1) => {
                 let ins_layer = kindent.as_ref().map(|(c, _)| c.layer.clone()).unwrap_or_default();
-                let attribs = insert_attribs(recs, &mut i, &ins_layer);
+                let attribs = insert_attribs(recs, &mut i, &ins_layer, &mut rx.fields, handle);
                 if let Some((_, EntityKind::Insert(ins))) = kindent.as_mut() {
                     ins.attribs = attribs;
                 }

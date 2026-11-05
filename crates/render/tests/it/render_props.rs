@@ -116,6 +116,7 @@ fn text(x: f64, value: &str) -> Text {
 
 fn attdef(handle: u64, tag: &str, x: f64, common: Common) -> Entity {
     let a = Attrib {
+        field: None,
         tag: tag.into(),
         text: text(x, tag),
         invisible: false,
@@ -151,6 +152,7 @@ fn attributes_draw_with_their_own_properties() {
     d.blocks.insert(blk.name.clone(), Arc::new(blk));
     let attribs = [("bylayer", 0.0), ("ByBlock", 10.0), ("LAYER0", 20.0), ("OWN", 30.0), ("NODEF", 40.0)]
         .map(|(tag, x)| Attrib {
+            field: None,
             tag: tag.into(),
             text: text(x, "X"),
             invisible: false,

@@ -24,7 +24,8 @@ mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
 pub use grips::{DynGrip, GripPart, GripShape, grips};
-pub use reference::{CustomProperty, Reference, Value, custom_properties, reference};
+pub(crate) use reference::Reader;
+pub use reference::{CustomProperty, ParamValue, Reference, Value, custom_properties, parameter_value, reference};
 
 /// Most objects one evaluation graph is read with.
 const MAX_NODES: usize = 10_000;

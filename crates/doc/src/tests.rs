@@ -210,6 +210,7 @@ fn visible_attributes_of_a_missing_block_still_count() {
     // The renderer draws the attributes of a reference whose definition is missing, so they are
     // extents and selection targets, as with an empty definition. The insertion point still isn't.
     let attrib = |invisible: bool| Attrib {
+        field: None,
         tag: "TAG".into(),
         text: Text {
             insert: Vec3::new(1000.0, 1000.0, 0.0),
@@ -431,6 +432,7 @@ fn plain_insert(block: &str) -> EntityKind {
 /// An attribute (or its definition) `tag` at the origin, one unit high, reading "x".
 fn plain_attrib(tag: &str) -> Attrib {
     Attrib {
+        field: None,
         tag: tag.into(),
         text: Text {
             insert: Vec3::ZERO,
@@ -571,6 +573,7 @@ fn attdef_in_block_is_ignored_in_insert_extents() {
     let attdef = Entity::new(
         Handle(2),
         EntityKind::AttDef(Attrib {
+            field: None,
             tag: "TAG".into(),
             text: Text {
                 insert: Vec3::new(5000.0, 5000.0, 0.0),

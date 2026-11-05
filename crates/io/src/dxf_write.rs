@@ -36,6 +36,7 @@ use entity::entity;
 pub(crate) use header::code_page;
 use sections::tags_for;
 
+#[derive(Default)]
 struct W {
     t: Vec<Tag>,
     next: u64,
@@ -46,6 +47,10 @@ struct W {
     /// Persistent reactors of source geometry: the associative hatches and DIMASSOC objects
     /// that follow it (groups `{ACAD_REACTORS 330 …}`).
     reactors: HashMap<Handle, Vec<String>>,
+    /// The objects of attribute fields (their dictionaries and FIELDs), written in OBJECTS.
+    fields: Vec<Tag>,
+    /// The handles of those FIELDs, for the field list.
+    field_handles: Vec<String>,
 }
 
 impl W {
@@ -144,13 +149,7 @@ fn bridge_markers(tags: &mut [Tag]) {
 /// VERTEXes, gives its first). Handles of objects outside the entity (owner, styles) are left
 /// out. AutoLISP's `entget` is built on it.
 pub fn entity_groups(d: &Drawing, e: &Entity) -> (String, Vec<Tag>) {
-    let mut w = W {
-        t: Vec::new(),
-        next: d.handseed.max(0x100).saturating_add(0x1000),
-        pstyles: HashMap::new(),
-        layers: HashMap::new(),
-        reactors: HashMap::new(),
-    };
+    let mut w = W { next: d.handseed.max(0x100).saturating_add(0x1000), ..W::default() };
     let cx = Ctx { target: Version::R2018, legacy_columns: true, ..Ctx::default() };
     let paper = d.space_of(e.handle).is_some_and(|s| !matches!(s, cadcraft_doc::Space::Model));
     entity(&mut w, d, e, "0", paper, &cx);
